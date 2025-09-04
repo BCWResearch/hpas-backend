@@ -8,12 +8,19 @@ const prisma = new PrismaClient();
 
 const DEFAULT_WINDOW_SECONDS = 60; // throttle window
 const ROUTE_SCOPE_MAP: Record<string, string> = {
-  "/api/faucet/claim": "faucet:claim",
-  "/api/passport/read": "passport:read",
+  "/api/autofaucet/drip": "autofaucet:drip",
+  "/api/faucet/check-EVM": "faucet:check-EVM",
+  "/api/faucet/check-hedera": "faucet:check-hedera",
+  "/api/faucet/faucet-claim": "faucet:drip",
+  "/api/score/:accountId": "passport:score",
+
 };
 const ROUTE_COST_MAP: Record<string, number> = {
-  "/api/faucet/claim": 1,
-  "/api/passport/read": 1,
+  "/api/autofaucet/drip": 1,
+  "/api/score/:accountId": 1,
+  "/api/faucet/check-EVM": 1,
+  "/api/faucet/check-hedera": 1,
+  "/api/faucet/faucet-claim": 1,
 };
 
 // Verifies Access via API Key

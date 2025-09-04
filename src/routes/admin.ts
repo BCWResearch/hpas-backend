@@ -1,5 +1,5 @@
 import { Router, Request, Response } from "express";
-import { PrismaClient, PartnerAccount } from "@prisma/client";
+import { PrismaClient, PartnerAccount, AccountType } from "@prisma/client";
 import { issueApiKey } from "../utils/apiKey"; // optional if you want to mint a key here
 import { makeLocalKmsAdapter } from "../utils/kms/local";
 import crypto from "crypto";
@@ -9,8 +9,23 @@ import { requireAdminAuth } from "../middleware/adminAuth";
 
 const router = Router();
 const prisma = new PrismaClient();
-
 const kmsAdapter = makeLocalKmsAdapter();
+const isEvm = (s: string) => /^0x[0-9a-fA-F]{40}$/.test(s.trim());
+const isHedera = (s: string) => /^\d+\.\d+\.\d+$/.test(s.trim());
+
+const normalize = (raw: string) => {
+    const t = (raw ?? "").trim();
+    if (isEvm(t)) {
+        // canonical: lowercase with 0x
+        return { evm: t.toLowerCase(), hedera: null as string | null, kind: 'EVM' as AccountType };
+    }
+    if (isHedera(t)) {
+        // canonical: keep as-is (Hedera IDs are numeric dotted)
+        return { evm: null as string | null, hedera: t, kind: 'HEDERA' as AccountType };
+    }
+    return { evm: null as string | null, hedera: null as string | null, kind: null };
+};
+
 
 /**
  * POST /add-new-partner
@@ -69,7 +84,7 @@ router.post(
                     partnerId: partner.id,
                     env: "LIVE",
                     type: "FAUCET",
-                    scopes: ["faucet:claim"],
+                    scopes: ["autofaucet:drip", "faucet:check-EVM", "faucet:check-hedera", "faucet:drip", "passport:score"],
                 });
 
                 return { partner, accounts: createdAccounts };
@@ -92,33 +107,16 @@ router.post(
 
 
 
-const isEvm = (s: string) => /^0x[0-9a-fA-F]{40}$/.test(s.trim());
-const isHedera = (s: string) => /^\d+\.\d+\.\d+$/.test(s.trim());
-
-const normalize = (raw: string) => {
-    const t = (raw ?? "").trim();
-    if (isEvm(t)) {
-        // canonical: lowercase with 0x
-        return { evm: t.toLowerCase(), hedera: null as string | null };
-    }
-    if (isHedera(t)) {
-        // canonical: keep as-is (Hedera IDs are numeric dotted)
-        return { evm: null as string | null, hedera: t };
-    }
-    return { evm: null as string | null, hedera: null as string | null };
-};
 
 router.post("/auth/nonce", async (req: Request, res: Response) => {
-    const { kind, accountId } = req.body ?? {};
-    if (!kind || !accountId) return res.status(400).json({ error: "Missing wallet" });
+    const { accountId } = req.body ?? {};
+    if (!accountId) return res.status(400).json({ error: "Missing wallet" });
 
-    const { evm, hedera } = normalize(accountId);
-
+    const { evm, hedera, kind } = normalize(accountId);
     // Optional: early reject obviously bad inputs
-    if (!evm && !hedera) {
+    if (!evm && !hedera || !kind) {
         return res.status(400).json({ error: "Invalid wallet format" });
     }
-
     // Try to match admin by either field (case-insensitive for EVM)
     const admin = await prisma.adminAccount.findFirst({
         where: {
@@ -132,29 +130,29 @@ router.post("/auth/nonce", async (req: Request, res: Response) => {
 
     if (!admin) {
         // TEMP diagnostics—remove in prod
-        console.warn("Admin lookup failed", { input: accountId, evm, hedera, kind, db: process.env.DATABASE_URL });
+        console.warn("Admin lookup failed", { input: accountId, evm, hedera, db: process.env.DATABASE_URL });
         return res.status(403).json({ error: "Not an admin wallet" });
     }
 
     const nonce = `admin:${Date.now()}:${crypto.randomBytes(16).toString("hex")}`;
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
-
     await prisma.adminLoginNonce.create({
         data: { kind, accountId: evm ?? hedera!, nonce, expiresAt },
     });
 
-    res.json({ nonce, expiresAt });
+    res.status(200).json({ nonce, expiresAt });
+    return;
 });
 
 
 // 2) Verify signature
 router.post("/auth/verify", async (req, res) => {
-    const { kind, accountId, signature, nonce } = req.body ?? {};
-    if (!kind || !accountId || !signature || !nonce)
+    const { accountId, signature, nonce } = req.body ?? {};
+    if ( !accountId || !signature || !nonce)
         return res.status(400).json({ error: "Missing fields" });
 
-    const { evm, hedera } = normalize(accountId);
-    if (!evm && !hedera) {
+    const { evm, hedera, kind } = normalize(accountId);
+    if (!evm && !hedera || !kind) {
         return res.status(400).json({ error: "Invalid wallet format" });
     }
     const rec = await prisma.adminLoginNonce.findFirst({
@@ -169,10 +167,9 @@ router.post("/auth/verify", async (req, res) => {
             return res.status(401).json({ error: "Signature mismatch" });
         }
     } else {
-        // TODO: add Hedera Verify if needed
+        // TODO: add Hedera Verification
         return res.status(400).json({ error: "Hedera admin sign-in not implemented yet" });
     }
-
 
     await prisma.adminLoginNonce.update({ where: { id: rec.id }, data: { consumedAt: new Date() } });
 
@@ -191,10 +188,11 @@ router.post("/auth/verify", async (req, res) => {
         isAdmin: true,
         adminId: admin.id,
         role: admin.role as any,
-        subType: "partner"
+        subType: "admin"
     });
 
-    res.json({ accessToken });
+    res.status(200).json({ accessToken });
+    return;
 });
 
 

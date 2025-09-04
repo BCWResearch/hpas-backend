@@ -184,7 +184,7 @@ model ApiKeyAccount {
 model ApiKeyScope {
   id       String @id @default(cuid())
   apiKeyId String
-  scope    String // e.g. "passport:read", "faucet:claim"
+  scope    String? // e.g. "passport", "faucet"
 
   apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
 
