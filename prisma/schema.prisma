@@ -1,0 +1,257 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Enums ----------
+enum AccountType {
+  EVM
+  HEDERA
+}
+
+enum Network {
+  MAINNET
+  TESTNET
+}
+
+enum KeyEnv {
+  TEST
+  LIVE
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  VIEWER
+}
+
+enum KeyType {
+  FAUCET
+  HASHPASS
+}
+
+enum Tier {
+  BASIC
+  ADVANCED
+  ENTERPRISE
+}
+
+// ---------- Master Control Sign In -----------
+
+model AdminAccount {
+  id           String   @id @default("master") // always "master"
+  walletEvm    String?  @unique
+  walletHedera String?  @unique
+  role         String   @default("SUPERADMIN")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model AdminLoginNonce {
+  id         String      @id @default(cuid())
+  kind       AccountType // EVM | HEDERA
+  accountId  String
+  nonce      String
+  expiresAt  DateTime
+  consumedAt DateTime?
+
+  @@index([kind, accountId, expiresAt])
+}
+
+// ---------- Sign In ---------
+model WalletLoginNonce {
+  id         String      @id @default(cuid())
+  type       AccountType
+  accountId  String
+  network    Network     @default(MAINNET)
+  chainId    Int?
+  nonce      String
+  expiresAt  DateTime
+  consumedAt DateTime?
+
+  @@index([type, network, chainId, accountId])
+  @@index([expiresAt])
+}
+
+// prisma/schema.prisma addition
+model SecureTokenJti {
+  jti       String    @id
+  purpose   String // "secure"
+  createdAt DateTime  @default(now())
+  usedAt    DateTime?
+  expiresAt DateTime
+  partnerId String?
+  memberId  String?
+  adminId   String?
+
+  @@index([expiresAt])
+}
+
+// ---------- Core ----------
+model Partner {
+  id        String   @id @default(cuid())
+  name      String
+  contact   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // commercial plan
+  tier                 Tier @default(BASIC)
+  // optional per-partner override (null => use TierPlan.requestLimit)
+  requestLimitOverride Int?
+
+  // relations
+  accounts     PartnerAccount[]
+  keys         ApiKey[]
+  usageWindows ApiUsageWindow[] // counters
+  // (optional) request logs for analytics/audit
+  requestLogs  ApiRequestLog[]
+
+  @@index([name])
+}
+
+model PartnerAccount {
+  id              String          @id @default(cuid())
+  partnerId       String
+  type            AccountType
+  accountId       String
+  network         Network         @default(MAINNET)
+  chainId         Int?
+  createdAt       DateTime        @default(now())
+  partner         Partner         @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  isLoginIdentity Boolean         @default(false) // can this wallet sign in?
+  role            MemberRole      @default(OWNER) // OWNER | ADMIN | VIEWER
+  ApiKeyAccount   ApiKeyAccount[]
+
+  // uniqueness guards (unchanged)
+  @@unique([type, network, chainId, accountId])
+  @@index([partnerId])
+  @@index([type, accountId])
+  @@index([isLoginIdentity, type, network, chainId, accountId])
+}
+
+model ApiKey {
+  id         String    @id @default(cuid())
+  partnerId  String
+  keyHash    String
+  prefix     String    @unique
+  env        KeyEnv    @default(LIVE)
+  type       KeyType
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  revoked    Boolean   @default(false)
+
+  // NEW: envelope-encrypted plaintext storage
+  secretCiphertext Bytes // AES-GCM ciphertext
+  secretIv         Bytes // 12-byte IV/nonce
+  secretTag        Bytes // 16-byte auth tag (if not embedded in ciphertext)
+  wrappedDek       Bytes // KMS-wrapped data key
+  kmsKeyId         String // which KMS key was used (resource path/arn)
+  // optional telemetry
+  lastRevealedAt   DateTime?
+  revealedCount    Int       @default(0)
+
+  partner       Partner          @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  scopes        ApiKeyScope[]
+  usageWindows  ApiUsageWindow[]
+  requestLogs   ApiRequestLog[]
+  ApiKeyAccount ApiKeyAccount[]
+
+  @@index([partnerId])
+  @@index([revoked, expiresAt])
+}
+
+model ApiKeyAccount {
+  id               String @id @default(cuid())
+  apiKeyId         String
+  partnerAccountId String
+
+  apiKey  ApiKey         @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  account PartnerAccount @relation(fields: [partnerAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([apiKeyId, partnerAccountId])
+  @@index([apiKeyId])
+  @@index([partnerAccountId])
+}
+
+// Many-to-many "normalized scopes" for queryability and governance
+model ApiKeyScope {
+  id       String @id @default(cuid())
+  apiKeyId String
+  scope    String // e.g. "passport:read", "faucet:claim"
+
+  apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+
+  @@unique([apiKeyId, scope])
+  @@index([apiKeyId])
+  @@index([scope])
+}
+
+// ---------- Plans & Policy ----------
+model TierPlan {
+  id           String   @id @default(cuid())
+  name         Tier     @unique
+  requestLimit Int // e.g., BASIC=200, ADVANCED=5000, ENTERPRISE=10000
+  // Optional: attach features as flags for FE/BE gating
+  features     String[] // ["passport:read","faucet:claim",...]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Optional: per-tier/per-route policy (if you want different limits per endpoint)
+model RateLimitPolicy {
+  id            String @id @default(cuid())
+  tier          Tier
+  route         String // e.g. "/api/faucet/drip"
+  windowSeconds Int // e.g. 60
+  maxRequests   Int
+
+  @@unique([tier, route, windowSeconds])
+  @@index([tier])
+  @@index([route])
+}
+
+// ---------- Usage & Analytics ----------
+model ApiUsageWindow {
+  id          String   @id @default(cuid())
+  partnerId   String
+  apiKeyId    String
+  route       String // aggregate per route (or group key)
+  windowStart DateTime // inclusive
+  windowEnd   DateTime // exclusive
+  count       Int      @default(0)
+
+  partner Partner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  apiKey  ApiKey  @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+
+  // Fast upserts: 1 row per (key,route,window)
+  @@unique([apiKeyId, route, windowStart, windowEnd])
+  @@index([partnerId, windowStart])
+  @@index([route, windowStart])
+}
+
+// (Optional but very useful) immutable request log for audit/debug/billing
+model ApiRequestLog {
+  id         String   @id @default(cuid())
+  timestamp  DateTime @default(now())
+  partnerId  String
+  apiKeyId   String
+  route      String
+  statusCode Int
+  costUnits  Int      @default(1) // weight for throttling/billing if routes have different costs
+  ipHash     String? // if you store an anonymized client fingerprint
+
+  partner Partner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  apiKey  ApiKey  @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+
+  @@index([partnerId, timestamp])
+  @@index([apiKeyId, timestamp])
+  @@index([route, timestamp])
+}
