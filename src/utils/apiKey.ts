@@ -68,14 +68,28 @@ export function parsePlaintextKey(k: string): {
   secret: string;
 } {
   const parts = k.split("_");
-  if (parts.length < 5 || parts[0] !== "pk") throw new Error("Invalid API key format");
+  if (parts.length < 6 || parts[0] !== "pk") {
+    throw new Error("Invalid API key format");
+  }
+
   const env = parts[1].toUpperCase();
   const type = parts[2].toUpperCase();
-  const prefix = parts[3];
-  const secret = parts.slice(4).join("_");
-  if (env !== "LIVE" && env !== "TEST") throw new Error("Invalid env in key");
-  if (type !== "FAUCET" && type !== "HASHPASS") throw new Error("Invalid type in key");
-  if (!prefix || !secret) throw new Error("Invalid key components");
+
+  // prefix can itself contain underscores depending on your minting scheme
+  // For now, take parts[3] and parts[4] as prefix
+  const prefix = `${parts[3]}_${parts[4]}`;
+  const secret = parts.slice(5).join("_");
+
+  if (env !== "LIVE" && env !== "TEST") {
+    throw new Error("Invalid env in key");
+  }
+  if (type !== "FAUCET" && type !== "HASHPASS") {
+    throw new Error("Invalid type in key");
+  }
+  if (!prefix || !secret) {
+    throw new Error("Invalid key components");
+  }
+
   return { env: env as KeyEnv, type: type as KeyType, prefix, secret };
 }
 

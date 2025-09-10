@@ -195,5 +195,115 @@ router.post("/auth/verify", async (req, res) => {
     return;
 });
 
+// New routes
+
+/**
+ * DELETE /partner/:id
+ * Admin-only route: Delete
+ */
+
+router.delete(
+    "/partner/:id",
+    requireAdminAuth,
+    async (req: Request, res: Response) => {
+        const { id } = req.params;
+
+        if (!id) {
+            return res.status(400).json({ error: "Missing partner id." });
+        }
+
+        try {
+            const deletedPartner = await prisma.partner.delete({
+                where: { id },
+            });
+
+            return res.status(200).json({
+                message: `Partner '${deletedPartner.name}' deleted successfully.`,
+            });
+        } catch (error) {
+            console.error("Error deleting partner:", error);
+            return res.status(500).json({ error: "Internal server error." });
+        }
+    }
+);
+
+/**
+ * GET All partners
+ * Admin-only route: fetch all partners
+ */
+
+router.get(
+    "/partners",
+    requireAdminAuth,
+    async (req: Request, res: Response) => {
+
+        try {
+            const allPartners = await prisma.partner.findMany({ include: { accounts: true, requestLogs: true } });
+
+            return res.status(200).json({ allPartners })
+        } catch (error) {
+            console.error("Error fetching all partner:", error);
+            return res.status(500).json({ error: "Internal server error." });
+        }
+    }
+);
+
+
+/**
+ * PATCH /partners/:id
+ * Admin-only: Edit a partner's details
+ */
+router.patch("/partners/:id", requireAdminAuth, async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { name, contact, tier, requestLimitOverride } = req.body;
+
+  try {
+    const updatedPartner = await prisma.partner.update({
+      where: { id },
+      data: { name, contact, tier, requestLimitOverride },
+    });
+    return res.status(200).json({ partner: updatedPartner });
+  } catch (error) {
+
+    console.error("Error updating partner:", error);
+    return res.status(500).json({ error: "Internal server error." });
+  }
+});
+
+
+/**
+ * POST /partners/:partnerId/accounts
+ * Admin-only: Add a new account for a partner
+ */
+router.post(
+  "/partners/:partnerId/accounts",
+  requireAdminAuth,
+  async (req: Request, res: Response) => {
+    const { partnerId } = req.params;
+    const { type, accountId , role } = req.body;
+
+    if (!type || !accountId) {
+      return res.status(400).json({ error: "Account type and accountId are required." });
+    }
+
+    try {
+      const newAccount = await prisma.partnerAccount.create({
+        data: {
+          partnerId,
+          type,
+          accountId,
+          role,
+        },
+      });
+      return res.status(201).json({ account: newAccount });
+    } catch (error) {
+      console.error("Error creating partner account:", error);
+      return res.status(500).json({ error: "Internal server error." });
+    }
+  }
+);
+
+
+// TODO edit account (not much additional info), account perms (More info needed, keeping it basic is fine i would think)
 
 export default router;

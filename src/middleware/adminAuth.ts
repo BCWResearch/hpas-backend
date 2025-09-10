@@ -15,7 +15,6 @@ export async function requireAdminAuth(req: Request, res: Response, next: NextFu
     (req as any).admin = {
       adminId: payload.adminId,
       role: payload.role,
-      stepUpAt: payload.stepUpAt ? new Date(payload.stepUpAt) : undefined,
     };
     next();
   } catch {

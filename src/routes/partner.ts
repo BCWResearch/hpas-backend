@@ -1,10 +1,10 @@
 // src/routes/partner.ts
 import { Router, Request, Response, NextFunction } from "express";
-import { PrismaClient, AccountType, Network } from "@prisma/client";
+import { PrismaClient, AccountType } from "@prisma/client";
 import crypto from "crypto";
 import { issueApiKey, revealApiKey } from "../utils/apiKey";
 import { makeLocalKmsAdapter } from "../utils/kms/local"; // swap to GCP in prod
-import { getAddress, verifyMessage } from "ethers";
+import { getAddress, id, verifyMessage } from "ethers";
 import { sha256 } from "../utils/jwt";
 import { registerSecureJti, consumeSecureJti } from "../utils/secureJti";
 import { signSecureToken, signSessionToken } from "../utils/jwt";
@@ -196,20 +196,23 @@ router.post("/auth/nonce", async (req, res) => {
 });
 
 
-// Verify signature → issue a 20s secure token for a specific sensitive route
+// Verify signature → issue a 1 minute secure token for a specific sensitive route
 router.post("/auth/verify", async (req, res) => {
-  const { kind, accountId, network, chainId, signature, nonce, action, keyId } = req.body ?? {};
-  if (!kind || !accountId || !signature || !nonce || !action || !keyId) {
+  const { accountId, network, chainId, signature, nonce, action, keyId } = req.body ?? {};
+  if (!accountId || !signature || !nonce || !action || !keyId) {
     return res.status(400).json({ error: "Missing fields" });
   }
+
+  const { evm, hedera, type } = normalizeAccountId(accountId);
+  if (!evm && !hedera || !type) return res.status(400).json({ error: "Invalid wallet format" });
 
   // 1) Find fresh nonce
   const rec = await prisma.walletLoginNonce.findFirst({
     where: {
-      type: kind,
+      type,
       accountId,
       network: network ?? "MAINNET",
-      chainId: kind === "EVM" ? chainId ?? 1 : null,
+      chainId: type === "EVM" ? chainId ?? 1 : null,
       nonce,
       consumedAt: null,
       expiresAt: { gt: new Date() },
@@ -219,7 +222,7 @@ router.post("/auth/verify", async (req, res) => {
   if (!rec) return res.status(401).json({ error: "Invalid or expired nonce" });
 
   // 2) Verify signature (EVM shown; add Hedera path if needed)
-  if (kind === "EVM") {
+  if (type === "EVM") {
     const recovered = verifyMessage(rec.nonce, signature);
     if (getAddress(recovered) !== getAddress(accountId)) {
       return res.status(401).json({ error: "Signature mismatch" });
@@ -230,7 +233,7 @@ router.post("/auth/verify", async (req, res) => {
   // 3) Map wallet → partner (must be a valid login identity)
   const member = await prisma.partnerAccount.findFirst({
     where: {
-      type: kind,
+      type,
       accountId: { equals: accountId, mode: "insensitive" },
       network: rec.network,
       chainId: rec.chainId ?? undefined,
@@ -291,7 +294,7 @@ router.post("/auth/verify", async (req, res) => {
   // 8) Register JTI as single-use with tiny TTL buffer
   await registerSecureJti(jti, { ttlMs: 25_000, partnerId: member.partnerId, memberId: member.id });
 
-  return res.json({ accessToken, partnerId: member.partnerId, expiresIn: 60, action, keyId });
+  return res.status(200).json({ accessToken, partnerId: member.partnerId, expiresIn: 60, action, keyId });
 });
 
 
@@ -317,6 +320,60 @@ router.get("/keys", requireSessionAuth, async (req, res) => {
       lastUsedAt: k.lastUsedAt,
       redacted: `pk_${k.env.toLowerCase()}_${k.type.toLowerCase()}_${k.prefix}_•••••••••`,
     })),
+  });
+});
+
+router.get("/info", requireSessionAuth, async (req, res) => {
+  const { partnerId } = (req as any).auth;
+  const keys = await prisma.apiKey.findMany({
+    where: {
+      partnerId,
+      revoked: false
+    },
+    orderBy: { createdAt: "desc" },
+    include: { scopes: true },
+  });
+  const partnerInfo = await prisma.partner.findFirst({
+    where: { id: partnerId }
+  });
+  const partnerAccounts = await prisma.partnerAccount.findMany({
+    where: { partnerId },
+    orderBy: { createdAt: "desc" }, // optional
+  });
+
+  res.json({
+    info: {
+      id: partnerId,
+      name: partnerInfo?.name,
+      contact: partnerInfo?.contact,
+      createdAt: partnerInfo?.createdAt,
+      updatedAt: partnerInfo?.updatedAt,
+      tier: partnerInfo?.tier,
+      requestLimitOverride: partnerInfo?.requestLimitOverride,
+      accounts: partnerAccounts.map(a => ({
+        id: a.id,
+        partnerId: a.partnerId,
+        type: a.type,
+        accountId: a.accountId,
+        network: a.network,
+        chainId: a.chainId,
+        createdAt: a.createdAt,
+        isLoginIdentity: a.isLoginIdentity,
+        role: a.role,
+      })),
+      keys: keys.map(k => ({
+        id: k.id,
+        prefix: k.prefix,
+        env: k.env,
+        type: k.type,
+        scopes: k.scopes.map(s => s.scope),
+        expiresAt: k.expiresAt,
+        createdAt: k.createdAt,
+        lastUsedAt: k.lastUsedAt,
+        redacted: `pk_${k.env.toLowerCase()}_${k.type.toLowerCase()}_${k.prefix}_•••••••••`,
+      })),
+      requestLogs: []
+    }
   });
 });
 

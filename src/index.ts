@@ -10,7 +10,7 @@ import adminRouter from "./routes/admin";   // where /add-new-partner lives
 
 const app = express();
 const prisma = new PrismaClient();
-const PORT = 3002;
+const PORT = 3003;
 
 
 app.use(express.json());

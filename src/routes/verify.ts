@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { KeyEnv, PrismaClient } from "@prisma/client";
 import { parsePlaintextKey } from "../utils/apiKey";
 import argon2 from "argon2";
+import { ROUTE_CONFIG } from "../constant/routeMap";
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -25,11 +26,9 @@ const ROUTE_COST_MAP: Record<string, number> = {
 
 // Verifies Access via API Key
 router.post("/verify-access", async (req: Request, res: Response) => {
-
   const started = Date.now();
   const h = req.header("authorization") ?? "";
   const token = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
-
   const originalRoute: string | undefined = req.body?.route || req.body?.originalRoute;
   const method = (req.body?.method || "POST").toUpperCase();
 
@@ -37,11 +36,11 @@ router.post("/verify-access", async (req: Request, res: Response) => {
   if (!originalRoute) return res.status(400).json({ error: "Missing route" });
 
   // 1) Resolve required scope
-  const requiredScope = ROUTE_SCOPE_MAP[originalRoute];
+  const requiredScope = ROUTE_CONFIG[originalRoute].scope;
   if (!requiredScope) {
     return res.status(400).json({ error: `Unrecognized route '${originalRoute}'` });
   }
-  const costUnits = ROUTE_COST_MAP[originalRoute] ?? 1;
+  const costUnits = ROUTE_CONFIG[originalRoute].cost ?? 1;
 
   // 2) Parse + lookup by prefix
   let parsed: { env: "LIVE" | "TEST"; type: "FAUCET" | "HASHPASS"; prefix: string };
@@ -50,7 +49,7 @@ router.post("/verify-access", async (req: Request, res: Response) => {
   } catch {
     return res.status(401).json({ error: "Invalid API key format" });
   }
-
+  console.log(parsed);
   const key = await prisma.apiKey.findUnique({
     where: { prefix: parsed.prefix },
     include: {
@@ -58,12 +57,14 @@ router.post("/verify-access", async (req: Request, res: Response) => {
       scopes: true,
     },
   });
+  console.log(key?.keyHash);
   if (!key || key.revoked) return res.status(401).json({ error: "Key revoked or not found" });
   if (key.expiresAt && key.expiresAt < new Date())
     return res.status(401).json({ error: "Key expired" });
 
   // 3) Verify signature (argon2.verify)
   const good = await argon2.verify(key.keyHash, token);
+  console.log(good);
   if (!good) return res.status(401).json({ error: "Invalid API key" });
 
   // 4) Scope check (either present on key or allowed by tier’s features)
@@ -76,6 +77,7 @@ router.post("/verify-access", async (req: Request, res: Response) => {
   if (!keyHasScope && !tierAllowsScope) {
     return res.status(403).json({ error: "Insufficient scope" });
   }
+  console.log("KS:", keyHasScope);
 
   // 5) Rate limit (ApiUsageWindow)
   //   Get effective limit: Partner.requestLimitOverride ?? TierPlan.requestLimit
@@ -84,6 +86,7 @@ router.post("/verify-access", async (req: Request, res: Response) => {
   if (effectiveLimit <= 0) {
     return res.status(403).json({ error: "No request allowance for this partner" });
   }
+  console.log(effectiveLimit);
 
   // Windowing (per key + route + fixed-size window)
   const windowSeconds = DEFAULT_WINDOW_SECONDS;
@@ -112,7 +115,7 @@ router.post("/verify-access", async (req: Request, res: Response) => {
         count: costUnits,
       },
     });
-
+    console.log('6');
     if (usage.count > effectiveLimit) {
       // Optional: also write a log row for rejected attempts
       await prisma.apiRequestLog.create({
@@ -125,6 +128,9 @@ router.post("/verify-access", async (req: Request, res: Response) => {
           ipHash: hashIp(req.ip),
         },
       });
+
+      console.log('7');
+
       return res.status(429).json({
         error: "Rate limit exceeded",
         limit: effectiveLimit,
@@ -139,6 +145,7 @@ router.post("/verify-access", async (req: Request, res: Response) => {
 
   // 6) Optional: request log (non-blocking semantics if failure)
   try {
+    console.log('8');
     await prisma.apiRequestLog.create({
       data: {
         partnerId: key.partnerId,
@@ -150,14 +157,16 @@ router.post("/verify-access", async (req: Request, res: Response) => {
       },
     });
     // lightweight "last used" update (don’t await)
-    prisma.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date() } }).catch(() => {});
+    console.log('9');
+    prisma.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date() } }).catch(() => { });
   } catch (e) {
     // swallow logging errors
     console.warn("request log write failed", e);
   }
+  console.log('10');
 
   // 7) Success — return context for upstream (if you want)
-  return res.json({
+  res.status(200).json({
     ok: true,
     partner: {
       id: key.partner.id,
@@ -172,11 +181,8 @@ router.post("/verify-access", async (req: Request, res: Response) => {
     },
     scope: requiredScope,
     route: originalRoute,
-    method,
-    effectiveLimit,
-    windowSeconds,
-    latencyMs: Date.now() - started,
   });
+  return;
 });
 
 export default router;
