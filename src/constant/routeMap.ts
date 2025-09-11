@@ -4,6 +4,8 @@ export enum ApiRoute {
   FAUCET_CHECK_HEDERA = "/api/faucet/check-hedera",
   FAUCET_CLAIM = "/api/faucet/faucet-claim",
   PASSPORT_SCORE = "/api/score/:accountId",
+  AUTO_FAUCET_FINALIZE = "/api/autofaucet/finalize",
+  FAUCET_TRANSACTIONS = "/api/transactions"
 }
 
 export enum ApiScope {
@@ -12,6 +14,8 @@ export enum ApiScope {
   FAUCET_CHECK_HEDERA = "faucet:check-hedera",
   FAUCET_CLAIM = "faucet:drip",
   PASSPORT_SCORE = "passport:score",
+  //AUTO_FAUCET_FINALIZE = "autofaucet:finalize"
+  FAUCET_TRANSACTIONS = "faucet:transactions"
 }
 
 export interface RouteConfig {
@@ -22,12 +26,17 @@ export interface RouteConfig {
 
 const AUTOFAUCET_ROUTES: RouteConfig[] = [
   { path: ApiRoute.AUTO_FAUCET_DRIP, scope: ApiScope.AUTO_FAUCET_DRIP, cost: 1 },
+  { path: ApiRoute.AUTO_FAUCET_FINALIZE, scope: ApiScope.AUTO_FAUCET_DRIP, cost: 0},
 ];
 
 const FAUCET_ROUTES: RouteConfig[] = [
   { path: ApiRoute.FAUCET_CHECK_EVM, scope: ApiScope.FAUCET_CHECK_EVM, cost: 1 },
   { path: ApiRoute.FAUCET_CHECK_HEDERA, scope: ApiScope.FAUCET_CHECK_HEDERA, cost: 1 },
   { path: ApiRoute.FAUCET_CLAIM, scope: ApiScope.FAUCET_CLAIM, cost: 1 },
+];
+
+const TRANSACTION_ROUTES: RouteConfig[] = [
+  { path: ApiRoute.FAUCET_TRANSACTIONS, scope: ApiScope.FAUCET_TRANSACTIONS, cost: 1},
 ];
 
 const PASSPORT_ROUTES: RouteConfig[] = [
@@ -38,11 +47,12 @@ export const ROUTES: RouteConfig[] = [
   ...AUTOFAUCET_ROUTES,
   ...FAUCET_ROUTES,
   ...PASSPORT_ROUTES,
+  ...TRANSACTION_ROUTES,
 ];
 
 export const ROUTE_CONFIG = Object.fromEntries(
   ROUTES.map((r) => [r.path, r])
-) 
+)
 
 
 /* 

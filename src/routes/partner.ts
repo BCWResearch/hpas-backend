@@ -408,7 +408,7 @@ router.post("/keys/:id/regenerate",
       partnerId,
       env: cur.env as any,
       type: cur.type as any,
-      scopes: ["autofaucet:drip", "faucet:check-EVM", "faucet:check-hedera", "faucet:drip", "passport:score"],
+      scopes: ["autofaucet:drip", "faucet:check-EVM", "faucet:check-hedera", "faucet:drip", "passport:score", "faucet:transactions"],
       expiresAt: cur.expiresAt ?? null,
     });
 

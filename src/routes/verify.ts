@@ -8,24 +8,10 @@ const router = Router();
 const prisma = new PrismaClient();
 
 const DEFAULT_WINDOW_SECONDS = 60; // throttle window
-const ROUTE_SCOPE_MAP: Record<string, string> = {
-  "/api/autofaucet/drip": "autofaucet:drip",
-  "/api/faucet/check-EVM": "faucet:check-EVM",
-  "/api/faucet/check-hedera": "faucet:check-hedera",
-  "/api/faucet/faucet-claim": "faucet:drip",
-  "/api/score/:accountId": "passport:score",
-
-};
-const ROUTE_COST_MAP: Record<string, number> = {
-  "/api/autofaucet/drip": 1,
-  "/api/score/:accountId": 1,
-  "/api/faucet/check-EVM": 1,
-  "/api/faucet/check-hedera": 1,
-  "/api/faucet/faucet-claim": 1,
-};
 
 // Verifies Access via API Key
 router.post("/verify-access", async (req: Request, res: Response) => {
+  console.log("CALLED");
   const started = Date.now();
   const h = req.header("authorization") ?? "";
   const token = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
@@ -69,6 +55,7 @@ router.post("/verify-access", async (req: Request, res: Response) => {
 
   // 4) Scope check (either present on key or allowed by tier’s features)
   const keyHasScope = key.scopes.some((s) => s.scope === requiredScope);
+    console.log("KS:", keyHasScope);
   let tierAllowsScope = false;
   if (!keyHasScope) {
     const plan = await prisma.tierPlan.findUnique({ where: { name: key.partner.tier } });
@@ -86,7 +73,7 @@ router.post("/verify-access", async (req: Request, res: Response) => {
   if (effectiveLimit <= 0) {
     return res.status(403).json({ error: "No request allowance for this partner" });
   }
-  console.log(effectiveLimit);
+  //console.log(effectiveLimit);
 
   // Windowing (per key + route + fixed-size window)
   const windowSeconds = DEFAULT_WINDOW_SECONDS;
@@ -115,7 +102,7 @@ router.post("/verify-access", async (req: Request, res: Response) => {
         count: costUnits,
       },
     });
-    console.log('6');
+    // console.log('6');
     if (usage.count > effectiveLimit) {
       // Optional: also write a log row for rejected attempts
       await prisma.apiRequestLog.create({
@@ -129,7 +116,7 @@ router.post("/verify-access", async (req: Request, res: Response) => {
         },
       });
 
-      console.log('7');
+     // console.log('7');
 
       return res.status(429).json({
         error: "Rate limit exceeded",
