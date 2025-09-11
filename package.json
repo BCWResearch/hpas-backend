@@ -4,6 +4,9 @@
   "main": "index.js",
   "scripts": {
     "start:dev": "npx ts-node src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "NODE_ENV=production node dist/src/index.js",
+    "deploy": "npm run prisma:generate && npm run prisma:migrate:deploy && npm run prisma:seed && npm run build && npm run start",
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate:dev": "prisma migrate dev --name init",
