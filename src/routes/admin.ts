@@ -84,7 +84,7 @@ router.post(
                     partnerId: partner.id,
                     env: "LIVE",
                     type: "FAUCET",
-                    scopes: ["autofaucet:drip", "faucet:check-EVM", "faucet:check-hedera", "faucet:drip", "passport:score"],
+                    scopes: ["autofaucet:drip", "faucet:check-EVM", "faucet:check-hedera", "faucet:drip", "passport:score", "faucet:transactions"],
                 });
 
                 return { partner, accounts: createdAccounts };
