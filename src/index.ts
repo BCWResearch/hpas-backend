@@ -7,7 +7,7 @@ import cors from "cors";
 import partnerRouter from "./routes/partner";
 import accessRouter from "./routes/verify"; // the /verify-access router file
 import adminRouter from "./routes/admin";   // where /add-new-partner lives
-
+import userRouter from "./routes/user";
 const app = express();
 const prisma = new PrismaClient();
 const PORT = 3003;
@@ -20,6 +20,8 @@ const ALLOWLIST = new Set([
   "http://localhost:5174",      // vite sometimes hops ports
   "http://localhost:4173",      // vite preview
   "https://faucet.hashport.network",
+  "https://faucet.api.hashport.network",
+  "https://hashpass.api.hashport.network",
 ]);
 
 const corsOptions: cors.CorsOptions = {
@@ -37,6 +39,7 @@ app.use(cors(corsOptions));
 app.use("/api/partner", partnerRouter);
 app.use("/api/access", accessRouter);
 app.use("/api/admin", adminRouter);
+app.use("/api/user", userRouter);
 
 app.get("/health", async (_req, res) => {
   try { await prisma.$queryRaw`SELECT 1`; res.json({ status: "ok", db: "connected" }); }
