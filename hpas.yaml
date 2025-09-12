@@ -1,0 +1,80 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  annotations:
+    run.googleapis.com/ingress: all
+    run.googleapis.com/ingress-status: all
+    # run.googleapis.com/threat-detection: 'true'
+    # run.googleapis.com/urls: '["https://hashport-shared-hpas-261712737248.europe-west1.run.app","https://hashport-shared-hpas-j6wkmehjlq-ew.a.run.app"]'
+  labels:
+    cloud.googleapis.com/location: europe-west1
+    env: shared
+    goog-terraform-provisioned: 'true'
+    managed-by: terraform
+  name: hashport-shared-hpas
+  namespace: '261712737248'
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/maxScale: '1'
+        autoscaling.knative.dev/minScale: '1'
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/network-interfaces: '[{"network":"projects/hashport/global/networks/hashport-shared","subnetwork":"projects/hashport/regions/europe-west1/subnetworks/hashport-shared-europe-west1-56599cfb","tags":["hpas"]}]'
+        run.googleapis.com/sessionAffinity: 'false'
+        run.googleapis.com/vpc-access-egress: private-ranges-only
+      labels:
+        run.googleapis.com/startupProbeType: Default
+    spec:
+      containerConcurrency: 80
+      containers:
+      - command:
+        - npm
+        - run
+        - deploy
+        env:
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: latest
+              name: hashport-shared-hpas-JWT_SECRET
+        - name: EVM_ADMIN_ACCOUNT_ID
+          value: '0xE746359b419Caf999a6e6cB4D6031B1867709B23'
+        - name: GCP_KMS_KEY_ID
+          value: projects/hashport/locations/europe-west1/keyRings/shared-hpas/cryptoKeys/default
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              key: latest
+              name: hashport-shared-hpas-DATABASE_URL
+        - name: HEDERA_ADMIN_ACCOUNT_ID
+          value: 0.0.422755
+        image: europe-west1-docker.pkg.dev/hashport/hashport-shared/hpas:latest
+        name: hpas
+        ports:
+        - containerPort: 3003
+          name: http1
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        startupProbe:
+          failureThreshold: 1
+          periodSeconds: 240
+          tcpSocket:
+            port: 3003
+          timeoutSeconds: 240
+        volumeMounts:
+        - mountPath: /root/.npm
+          name: debug
+      serviceAccountName: hashport-shared-hpas@hashport.iam.gserviceaccount.com
+      timeoutSeconds: 300
+      volumes:
+      - csi:
+          driver: gcsfuse.run.googleapis.com
+          volumeAttributes:
+            bucketName: hashport-shared-hpas-debug
+        name: debug
+  traffic:
+  - latestRevision: true
+    percent: 100
