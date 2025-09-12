@@ -1,0 +1,46 @@
+name: pipeline
+
+on:
+  push:
+    branches:
+    - "main"
+    - "peter-cicd"
+
+env:
+  CLOUDSDK_CORE_PROJECT: "hashport"
+  CLOUDSDK_CORE_DISABLE_PROMPTS: 1
+  REGISTRY: "europe-west1-docker.pkg.dev"
+  IMAGE: "europe-west1-docker.pkg.dev/hashport/hashport-shared/hpas"
+  SVC_YAML: "hpas.yaml"
+  DOMAIN: "hashport.network"
+  SUBDOMAIN: "hpas.api"
+  URL_MAP: "hashport-shared-services"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: google-github-actions/auth@v2
+      with:
+        credentials_json: '${{ secrets.GCP_SA_JSON }}'
+    - uses: google-github-actions/setup-gcloud@v2
+    - run: gcloud auth configure-docker "${{ env.REGISTRY }}"
+    - run: docker build -t "${{ env.IMAGE }}:rev-${{ github.sha }}" -t "${{ env.IMAGE }}:latest" .
+    - run: docker push "${{ env.IMAGE }}" --all-tags
+
+  # deploy:
+  #   runs-on: ubuntu-latest
+  #   needs: [build]
+  #   steps:
+  #   - uses: actions/checkout@v4
+  #   - uses: google-github-actions/auth@v2
+  #     with:
+  #       credentials_json: '${{ secrets.GCP_SA_JSON }}'
+  #   - uses: google-github-actions/setup-gcloud@v2
+  #   - uses: mikefarah/yq@master
+  #     with:
+  #       cmd: yq -i '.spec.template.spec.containers[0].image = "${{ env.IMAGE }}:rev-${{ github.sha }}"' "${{ env.SVC_YAML }}"
+  #   - run: gcloud run services replace "${{ env.SVC_YAML }}"
+  #   - run: gcloud compute url-maps invalidate-cdn-cache "${{ env.URL_MAP }}" --path "/*" --host "${{ env.SUBDOMAIN }}.shared.${{ env.DOMAIN }}" --async
+  #   - run: gcloud compute url-maps invalidate-cdn-cache "${{ env.URL_MAP }}" --path "/*" --host "${{ env.SUBDOMAIN }}.${{ env.DOMAIN }}" --async
