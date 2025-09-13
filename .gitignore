@@ -5,3 +5,4 @@ node_modules
 /src/generated/prisma
 .env
 dist
+/src/utils/kms/gcp.ts

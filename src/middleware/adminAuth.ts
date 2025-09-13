@@ -22,7 +22,7 @@ export async function requireAdminAuth(req: Request, res: Response, next: NextFu
   }
 }
 
-export function requireRecentAdminStepUp(minutes = 5) {
+export function requireRecentAdminStepUp(minutes = 1) {
   return (req: Request, res: Response, next: NextFunction) => {
     const ts = (req as any).admin?.stepUpAt?.getTime?.() ?? 0;
     if (!ts) return res.status(401).json({ error: "Step-up required" });
