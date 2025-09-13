@@ -39,7 +39,7 @@ export type SecureClaims = BaseClaims & {
     jti: string;              // single-use id
 };
 
-export async function signSessionToken(claims: Omit<SessionClaims, "tokenType">, ttl = "10m") {
+export async function signSessionToken(claims: Omit<SessionClaims, "tokenType">, ttl = "5m") {
     const now = Math.floor(Date.now() / 1000);
     return await new SignJWT({ ...claims, tokenType: "session" })
         .setProtectedHeader({ alg: "HS256" })
