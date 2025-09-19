@@ -3,7 +3,7 @@ export enum ApiRoute {
   FAUCET_CHECK_EVM = "/api/faucet/check-EVM",
   FAUCET_CHECK_HEDERA = "/api/faucet/check-hedera",
   FAUCET_CLAIM = "/api/faucet/faucet-claim",
-  PASSPORT_SCORE = "/api/score/:accountId",
+  PASSPORT_SCORE = "/api/passport/score",
   AUTO_FAUCET_FINALIZE = "/api/autofaucet/finalize",
   FAUCET_TRANSACTIONS = "/api/transactions"
 }
