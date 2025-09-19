@@ -10,7 +10,7 @@ import adminRouter from "./routes/admin";   // where /add-new-partner lives
 import userRouter from "./routes/user";
 const app = express();
 const prisma = new PrismaClient();
-const PORT = 3003;
+const PORT = Number(process.env.PORT) || 3003;
 
 
 app.use(express.json());
@@ -48,7 +48,7 @@ app.get("/health", async (_req, res) => {
 
 app.get("/", (_req, res) => res.send("HPAS API Key Service is running 🚀"));
 
-app.listen(PORT, async () => {
+app.listen(PORT, "0.0.0.0", async () => {
   await prisma.$connect();
   console.log(`✅ Prisma connected`);
   console.log(`🚀 Listening on http://localhost:${PORT}`);
