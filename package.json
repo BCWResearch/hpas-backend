@@ -23,6 +23,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@google-cloud/kms": "^5.2.0",
     "@prisma/client": "^6.15.0",
     "argon2": "^0.44.0",
     "cors": "^2.8.5",
