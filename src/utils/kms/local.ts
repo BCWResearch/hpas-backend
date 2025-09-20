@@ -38,7 +38,7 @@ export function makeLocalKmsAdapter(): KmsAdapter {
 
 
 
-const KEY_NAME = process.env.GCP_KMS_KEY_NAME ?? "";
+const KEY_NAME = process.env.GCP_KMS_KEY_ID ?? "";
 
 if (!KEY_NAME) {
   throw new Error(
@@ -51,7 +51,7 @@ if (!KEY_NAME) {
  */
 
 export function makeGcpKmsAdapter(): KmsAdapter {
-  const KEY_NAME = process.env.GCP_KMS_KEY_NAME;
+  const KEY_NAME = process.env.GCP_KMS_KEY_ID;
   if (!KEY_NAME) {
     throw new Error(
       "GCP_KMS_KEY_NAME is not set. Expected: projects/<PROJECT>/locations/<LOC>/keyRings/<RING>/cryptoKeys/<KEY>"
