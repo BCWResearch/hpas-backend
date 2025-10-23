@@ -5,7 +5,8 @@ export enum ApiRoute {
   FAUCET_CLAIM = "/api/faucet/faucet-claim",
   PASSPORT_SCORE = "/api/passport/score",
   AUTO_FAUCET_FINALIZE = "/api/autofaucet/finalize",
-  FAUCET_TRANSACTIONS = "/api/transactions"
+  FAUCET_TRANSACTIONS = "/api/transactions",
+  FAUCET_ACCOUNT_TRANSACTIONS = "/api/transactions/account"
 }
 
 export enum ApiScope {
@@ -37,6 +38,7 @@ const FAUCET_ROUTES: RouteConfig[] = [
 
 const TRANSACTION_ROUTES: RouteConfig[] = [
   { path: ApiRoute.FAUCET_TRANSACTIONS, scope: ApiScope.FAUCET_TRANSACTIONS, cost: 1},
+  { path: ApiRoute.FAUCET_ACCOUNT_TRANSACTIONS, scope: ApiScope.FAUCET_TRANSACTIONS, cost: 1}
 ];
 
 const PASSPORT_ROUTES: RouteConfig[] = [
