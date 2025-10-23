@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+/*import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 async function main() {
   await prisma.lockState.upsert({
@@ -7,4 +7,4 @@ async function main() {
     create: { id: "lock", faucet_paused: false },
   });
 }
-main().finally(() => prisma.$disconnect());
+main().finally(() => prisma.$disconnect());*/
