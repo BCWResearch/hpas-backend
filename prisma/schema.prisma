@@ -106,11 +106,12 @@ model Partner {
   requestLimitOverride Int?
 
   // relations
-  accounts     PartnerAccount[]
-  keys         ApiKey[]
-  usageWindows ApiUsageWindow[] // counters
+  accounts      PartnerAccount[]
+  keys          ApiKey[]
+  usageWindows  ApiUsageWindow[] // counters
   // (optional) request logs for analytics/audit
-  requestLogs  ApiRequestLog[]
+  requestLogs   ApiRequestLog[]
+  ApiUsageMonth ApiUsageMonth[]
 
   @@index([name])
 }
@@ -162,6 +163,7 @@ model ApiKey {
   usageWindows  ApiUsageWindow[]
   requestLogs   ApiRequestLog[]
   ApiKeyAccount ApiKeyAccount[]
+  ApiUsageMonth ApiUsageMonth[]
 
   @@index([partnerId])
   @@index([revoked, expiresAt])
@@ -182,7 +184,7 @@ model ApiKeyAccount {
 
 // Many-to-many "normalized scopes" for queryability and governance
 model ApiKeyScope {
-  id       String @id @default(cuid())
+  id       String  @id @default(cuid())
   apiKeyId String
   scope    String? // e.g. "passport", "faucet"
 
@@ -254,4 +256,19 @@ model ApiRequestLog {
   @@index([partnerId, timestamp])
   @@index([apiKeyId, timestamp])
   @@index([route, timestamp])
+}
+
+model ApiUsageMonth {
+  id         String   @id @default(cuid())
+  partnerId  String
+  apiKeyId   String
+  monthStart DateTime
+  monthEnd   DateTime
+  count      Int      @default(0)
+
+  partner Partner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  apiKey  ApiKey  @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+
+  @@unique([apiKeyId, monthStart, monthEnd])
+  @@index([partnerId])
 }

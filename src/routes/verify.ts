@@ -1,5 +1,5 @@
 import { Router, Request, Response } from "express";
-import { KeyEnv, PrismaClient } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import { parsePlaintextKey } from "../utils/apiKey";
 import argon2 from "argon2";
 import { ROUTE_CONFIG } from "../constant/routeMap";
@@ -17,10 +17,8 @@ router.post("/verify-access", async (req: Request, res: Response) => {
   const token = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
   const originalRoute: string | undefined = req.body?.route || req.body?.originalRoute;
   const method = (req.body?.method || "POST").toUpperCase();
-
   if (!token) return res.status(401).json({ error: "Missing API key" });
   if (!originalRoute) return res.status(400).json({ error: "Missing route" });
-
   // 1) Resolve required scope
   const requiredScope = ROUTE_CONFIG[originalRoute].scope;
   if (!requiredScope) {
@@ -55,7 +53,7 @@ router.post("/verify-access", async (req: Request, res: Response) => {
 
   // 4) Scope check (either present on key or allowed by tier’s features)
   const keyHasScope = key.scopes.some((s) => s.scope === requiredScope);
-    console.log("KS:", keyHasScope);
+  console.log("KS:", keyHasScope);
   let tierAllowsScope = false;
   if (!keyHasScope) {
     const plan = await prisma.tierPlan.findUnique({ where: { name: key.partner.tier } });
@@ -116,7 +114,7 @@ router.post("/verify-access", async (req: Request, res: Response) => {
         },
       });
 
-     // console.log('7');
+      // console.log('7');
 
       return res.status(429).json({
         error: "Rate limit exceeded",
@@ -124,10 +122,55 @@ router.post("/verify-access", async (req: Request, res: Response) => {
         windowSeconds,
         route: originalRoute,
       });
+
+
     }
   } catch (e) {
     console.error("Rate-limit upsert failed", e);
     return res.status(500).json({ error: "Internal Error (rate limiting)" });
+  }
+  try {
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const monthlyLimit = effectiveLimit;
+    const monthUsage = await prisma.apiUsageMonth.upsert({
+      where: {
+        apiKeyId_monthStart_monthEnd: {
+          apiKeyId: key.id,
+          monthStart,
+          monthEnd,
+        },
+      },
+      update: { count: { increment: costUnits } },
+      create: {
+        partnerId: key.partnerId,
+        apiKeyId: key.id,
+        monthStart,
+        monthEnd,
+        count: costUnits,
+      },
+    });
+
+    if (monthlyLimit > 0 && monthUsage.count > monthlyLimit) {
+      await prisma.apiRequestLog.create({
+        data: {
+          partnerId: key.partnerId,
+          apiKeyId: key.id,
+          route: originalRoute,
+          statusCode: 429,
+          costUnits,
+          ipHash: hashIp(req.ip),
+        },
+      });
+      return res.status(429).json({
+        error: "Monthly limit exceeded",
+        limit: monthlyLimit,
+        route: originalRoute,
+      });
+    }
+  } catch (e) {
+    console.error("Monthly-limit upsert failed", e);
+    return res.status(500).json({ error: "Internal Error (monthly rate limiting)" });
   }
 
   // 6) Optional: request log (non-blocking semantics if failure)
