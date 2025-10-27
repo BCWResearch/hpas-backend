@@ -3,7 +3,7 @@ import { Router, Request, Response, NextFunction } from "express";
 import { PrismaClient, AccountType } from "@prisma/client";
 import crypto from "crypto";
 import { issueApiKey, revealApiKey } from "../utils/apiKey";
-import { makeLocalKmsAdapter } from "../utils/kms/local"; // swap to GCP in prod
+import { makeGcpKmsAdapter, makeLocalKmsAdapter } from "../utils/kms/local"; // swap to GCP in prod
 import { getAddress, id, verifyMessage } from "ethers";
 import { sha256 } from "../utils/jwt";
 import { registerSecureJti, consumeSecureJti } from "../utils/secureJti";
@@ -13,7 +13,10 @@ import { requireSecure } from "../middleware/secureGate";
 
 const prisma = new PrismaClient();
 const router = Router();
-const kms = makeLocalKmsAdapter();
+const kms =
+  process.env.KEY_ENV === "gcp"
+    ? makeGcpKmsAdapter()
+    : makeLocalKmsAdapter();
 
 /** Attach req.auth from your JWT/session middleware after /auth/verify */
 type AuthCtx = { partnerId: string; memberId: string; stepUpAt?: Date };
@@ -408,7 +411,7 @@ router.post("/keys/:id/regenerate",
       partnerId,
       env: cur.env as any,
       type: cur.type as any,
-      scopes: ["autofaucet:drip", "faucet:check-EVM", "faucet:check-hedera", "faucet:drip", "passport:score", "faucet:transactions"],
+      scopes: ["faucet:drip", "passport:score", "faucet:transactions"],
       expiresAt: cur.expiresAt ?? null,
     });
 

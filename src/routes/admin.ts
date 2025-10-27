@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import { PrismaClient, PartnerAccount, AccountType } from "@prisma/client";
 import { issueApiKey } from "../utils/apiKey"; // optional if you want to mint a key here
-import { makeLocalKmsAdapter } from "../utils/kms/local";
+import { makeGcpKmsAdapter, makeLocalKmsAdapter } from "../utils/kms/local";
 import crypto from "crypto";
 import { getAddress, verifyMessage } from "ethers";
 import { signSessionToken } from "../utils/jwt";
@@ -9,7 +9,11 @@ import { requireAdminAuth } from "../middleware/adminAuth";
 
 const router = Router();
 const prisma = new PrismaClient();
-const kmsAdapter = makeLocalKmsAdapter();
+const kmsAdapter =
+  process.env.KEY_ENV === "gcp"
+    ? makeGcpKmsAdapter()
+    : makeLocalKmsAdapter();
+
 const isEvm = (s: string) => /^0x[0-9a-fA-F]{40}$/.test(s.trim());
 const isHedera = (s: string) => /^\d+\.\d+\.\d+$/.test(s.trim());
 
@@ -84,7 +88,7 @@ router.post(
                     partnerId: partner.id,
                     env: "LIVE",
                     type: "FAUCET",
-                    scopes: ["autofaucet:drip", "faucet:check-EVM", "faucet:check-hedera", "faucet:drip", "passport:score", "faucet:transactions"],
+                    scopes: ["faucet:drip", "passport:score", "faucet:transactions"],
                 });
 
                 return { partner, accounts: createdAccounts };

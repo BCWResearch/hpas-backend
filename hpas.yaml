@@ -33,6 +33,8 @@ spec:
         - run
         - deploy
         env:
+        - name: KEY_ENV
+          value: 'gcp'
         - name: JWT_SECRET
           valueFrom:
             secretKeyRef:
