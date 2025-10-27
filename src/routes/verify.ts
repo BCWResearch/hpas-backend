@@ -55,6 +55,7 @@ router.post("/verify-access", async (req: Request, res: Response) => {
   const keyHasScope = key.scopes.some((s) => s.scope === requiredScope);
   console.log("KS:", keyHasScope);
   let tierAllowsScope = false;
+  console.log(requiredScope);
   if (!keyHasScope) {
     const plan = await prisma.tierPlan.findUnique({ where: { name: key.partner.tier } });
     tierAllowsScope = !!plan?.features?.includes(requiredScope);
