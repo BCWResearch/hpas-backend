@@ -4,7 +4,7 @@ const prisma = new PrismaClient();
 async function main() {
   await prisma.tierPlan.upsert({
     where: { name: "BASIC" as Tier },
-    update: { requestLimit: 3, features: ["faucet:drip", "passport:score", "faucet:transactions"] },
+    update: { requestLimit: 500, features: ["faucet:drip", "passport:score", "faucet:transactions"] },
     create: { name: "BASIC", requestLimit: 200, features: ["faucet:check-EVM", "faucet:check-hedera", "faucet:drip", "passport:score", "faucet:transactions"] },
   });
   await prisma.tierPlan.upsert({
