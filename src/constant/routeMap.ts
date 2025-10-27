@@ -1,8 +1,9 @@
 export enum ApiRoute {
-  AUTO_FAUCET_DRIP = "/api/autofaucet/drip",
+  //AUTO_FAUCET_DRIP = "/api/autofaucet/drip",
   FAUCET_CHECK_EVM = "/api/faucet/check-EVM",
   FAUCET_CHECK_HEDERA = "/api/faucet/check-hedera",
   FAUCET_CLAIM = "/api/faucet/faucet-claim",
+  FAUCET_DRIP = "/api/faucet/drip",
   PASSPORT_SCORE = "/api/passport/score",
   AUTO_FAUCET_FINALIZE = "/api/autofaucet/finalize",
   FAUCET_TRANSACTIONS = "/api/transactions",
@@ -10,10 +11,11 @@ export enum ApiRoute {
 }
 
 export enum ApiScope {
-  AUTO_FAUCET_DRIP = "autofaucet:drip",
+  //AUTO_FAUCET_DRIP = "autofaucet:drip",
   FAUCET_CHECK_EVM = "faucet:check-EVM",
   FAUCET_CHECK_HEDERA = "faucet:check-hedera",
-  FAUCET_CLAIM = "faucet:drip",
+  FAUCET_CLAIM = "faucet:claim",
+  FAUCET_DRIP = "faucet:drip",
   PASSPORT_SCORE = "passport:score",
   //AUTO_FAUCET_FINALIZE = "autofaucet:finalize"
   FAUCET_TRANSACTIONS = "faucet:transactions"
@@ -25,20 +27,21 @@ export interface RouteConfig {
   cost: number;
 }
 
-const AUTOFAUCET_ROUTES: RouteConfig[] = [
+/*const AUTOFAUCET_ROUTES: RouteConfig[] = [
   { path: ApiRoute.AUTO_FAUCET_DRIP, scope: ApiScope.AUTO_FAUCET_DRIP, cost: 1 },
   { path: ApiRoute.AUTO_FAUCET_FINALIZE, scope: ApiScope.AUTO_FAUCET_DRIP, cost: 0},
-];
+];*/
 
 const FAUCET_ROUTES: RouteConfig[] = [
   { path: ApiRoute.FAUCET_CHECK_EVM, scope: ApiScope.FAUCET_CHECK_EVM, cost: 1 },
   { path: ApiRoute.FAUCET_CHECK_HEDERA, scope: ApiScope.FAUCET_CHECK_HEDERA, cost: 1 },
   { path: ApiRoute.FAUCET_CLAIM, scope: ApiScope.FAUCET_CLAIM, cost: 1 },
+  { path: ApiRoute.FAUCET_DRIP, scope: ApiRoute.FAUCET_DRIP, cost: 1},
 ];
 
 const TRANSACTION_ROUTES: RouteConfig[] = [
-  { path: ApiRoute.FAUCET_TRANSACTIONS, scope: ApiScope.FAUCET_TRANSACTIONS, cost: 1},
-  { path: ApiRoute.FAUCET_ACCOUNT_TRANSACTIONS, scope: ApiScope.FAUCET_TRANSACTIONS, cost: 1}
+  { path: ApiRoute.FAUCET_TRANSACTIONS, scope: ApiScope.FAUCET_TRANSACTIONS, cost: 0},
+  { path: ApiRoute.FAUCET_ACCOUNT_TRANSACTIONS, scope: ApiScope.FAUCET_TRANSACTIONS, cost: 0}
 ];
 
 const PASSPORT_ROUTES: RouteConfig[] = [
@@ -46,7 +49,7 @@ const PASSPORT_ROUTES: RouteConfig[] = [
 ];
 
 export const ROUTES: RouteConfig[] = [
-  ...AUTOFAUCET_ROUTES,
+//  ...AUTOFAUCET_ROUTES,
   ...FAUCET_ROUTES,
   ...PASSPORT_ROUTES,
   ...TRANSACTION_ROUTES,
