@@ -33,9 +33,9 @@ export interface RouteConfig {
 ];*/
 
 const FAUCET_ROUTES: RouteConfig[] = [
-  { path: ApiRoute.FAUCET_CHECK_EVM, scope: ApiScope.FAUCET_CHECK_EVM, cost: 1 },
-  { path: ApiRoute.FAUCET_CHECK_HEDERA, scope: ApiScope.FAUCET_CHECK_HEDERA, cost: 1 },
-  { path: ApiRoute.FAUCET_CLAIM, scope: ApiScope.FAUCET_CLAIM, cost: 1 },
+  //{ path: ApiRoute.FAUCET_CHECK_EVM, scope: ApiScope.FAUCET_CHECK_EVM, cost: 1 },
+  //{ path: ApiRoute.FAUCET_CHECK_HEDERA, scope: ApiScope.FAUCET_CHECK_HEDERA, cost: 1 },
+  //{ path: ApiRoute.FAUCET_CLAIM, scope: ApiScope.FAUCET_CLAIM, cost: 1 },
   { path: ApiRoute.FAUCET_DRIP, scope: ApiScope.FAUCET_DRIP, cost: 1},
 ];
 

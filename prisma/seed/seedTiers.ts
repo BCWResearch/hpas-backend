@@ -4,17 +4,17 @@ const prisma = new PrismaClient();
 async function main() {
   await prisma.tierPlan.upsert({
     where: { name: "BASIC" as Tier },
-    update: { features: ["faucet:check-EVM", "faucet:check-hedera", "faucet:claim", "faucet:drip", "passport:score", "faucet:transactions"] },
+    update: { features: ["faucet:drip", "passport:score", "faucet:transactions"] },
     create: { name: "BASIC", requestLimit: 200, features: ["faucet:check-EVM", "faucet:check-hedera", "faucet:drip", "passport:score", "faucet:transactions"] },
   });
   await prisma.tierPlan.upsert({
     where: { name: "ADVANCED" as Tier },
-    update: { requestLimit: 1000, features: ["faucet:check-EVM", "faucet:check-hedera", "faucet:claim", "faucet:drip", "passport:score", "faucet:transactions"] },
+    update: { requestLimit: 1000, features: ["faucet:drip", "passport:score", "faucet:transactions"] },
     create: { name: "ADVANCED", requestLimit: 5000, features: ["faucet:check-EVM", "faucet:check-hedera", "faucet:drip", "passport:score", "faucet:transactions"] },
   });
   await prisma.tierPlan.upsert({
     where: { name: "ENTERPRISE" as Tier },
-    update: { requestLimit: 5000, features: ["faucet:check-EVM", "faucet:check-hedera", "faucet:claim", "faucet:drip", "passport:score", "faucet:transactions"] },
+    update: { requestLimit: 5000, features: ["faucet:drip", "passport:score", "faucet:transactions"] },
     create: { name: "ENTERPRISE", requestLimit: 100000, features: ["faucet:check-EVM", "faucet:check-hedera", "faucet:drip", "passport:score", "faucet:transactions"] },
   });
 }
