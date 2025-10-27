@@ -68,7 +68,15 @@ router.post("/verify-access", async (req: Request, res: Response) => {
   // 5) Rate limit (ApiUsageWindow)
   //   Get effective limit: Partner.requestLimitOverride ?? TierPlan.requestLimit
   const tierPlan = await prisma.tierPlan.findUnique({ where: { name: key.partner.tier } });
-  const effectiveLimit = key.partner.requestLimitOverride ?? tierPlan?.requestLimit ?? 0;
+  let effectiveLimit = key.partner.requestLimitOverride ?? tierPlan?.requestLimit ?? 0;
+
+  // Special override for hashport-faucet partner
+  /*
+  if (key.partner.name === 'hashport-faucet') {
+    effectiveLimit = 100000; // set to 100,000
+  }
+  console.log(effectiveLimit);
+  */
   if (effectiveLimit <= 0) {
     return res.status(403).json({ error: "No request allowance for this partner" });
   }
