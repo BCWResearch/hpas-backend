@@ -33,7 +33,7 @@ router.post("/verify-access", async (req: Request, res: Response) => {
   } catch {
     return res.status(401).json({ error: "Invalid API key format" });
   }
-  console.log(parsed);
+  //console.log(parsed);
   const key = await prisma.apiKey.findUnique({
     where: { prefix: parsed.prefix },
     include: {
@@ -41,14 +41,14 @@ router.post("/verify-access", async (req: Request, res: Response) => {
       scopes: true,
     },
   });
-  console.log(key?.keyHash);
+  console.log("HI:", key?.keyHash);
   if (!key || key.revoked) return res.status(401).json({ error: "Key revoked or not found" });
   if (key.expiresAt && key.expiresAt < new Date())
     return res.status(401).json({ error: "Key expired" });
 
   // 3) Verify signature (argon2.verify)
   const good = await argon2.verify(key.keyHash, token);
-  console.log(good);
+  console.log("GOOD", good);
   if (!good) return res.status(401).json({ error: "Invalid API key" });
 
   // 4) Scope check (either present on key or allowed by tier’s features)
