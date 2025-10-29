@@ -258,7 +258,7 @@ router.get(
  * PATCH /partners/:id
  * Admin-only: Edit a partner's details
  */
-router.patch("/partners/:id", requireAdminAuth, async (req: Request, res: Response) => {
+router.post("/partners/:id", requireAdminAuth, async (req: Request, res: Response) => {
   const { id } = req.params;
   const { name, contact, tier, requestLimitOverride } = req.body;
 
