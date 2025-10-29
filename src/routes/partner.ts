@@ -351,6 +351,7 @@ router.get("/info", requireSessionAuth, async (req, res) => {
       contact: partnerInfo?.contact,
       createdAt: partnerInfo?.createdAt,
       updatedAt: partnerInfo?.updatedAt,
+      multiDrip: partnerInfo?.multiDrip,
       tier: partnerInfo?.tier,
       requestLimitOverride: partnerInfo?.requestLimitOverride,
       accounts: partnerAccounts.map(a => ({

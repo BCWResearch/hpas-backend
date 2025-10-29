@@ -211,6 +211,7 @@ router.post("/verify-access", async (req: Request, res: Response) => {
       id: key.partner.id,
       name: key.partner.name,
       tier: key.partner.tier,
+      multiDrip: key.partner.multiDrip
     },
     apiKey: {
       id: key.id,

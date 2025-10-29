@@ -99,7 +99,7 @@ model Partner {
   contact   String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
+  multiDrip Boolean   @default(false)
   // commercial plan
   tier                 Tier @default(BASIC)
   // optional per-partner override (null => use TierPlan.requestLimit)

@@ -46,7 +46,7 @@ router.post(
     async (req: Request, res: Response): Promise<any> => {
         try {
             // 1. Parse input
-            const { name, contact, tier, requestLimitOverride, accounts } = req.body;
+            const { name, contact, tier, requestLimitOverride, accounts, multiDrip } = req.body;
 
             if (!name) {
                 return res.status(400).json({ error: "Partner name is required" });
@@ -59,6 +59,7 @@ router.post(
                         name,
                         contact: contact ?? null,
                         tier: tier ?? "BASIC",
+                        multiDrip: multiDrip,
                         requestLimitOverride: requestLimitOverride ?? null,
                     },
                 });
