@@ -10,9 +10,9 @@ import { requireAdminAuth } from "../middleware/adminAuth";
 const router = Router();
 const prisma = new PrismaClient();
 const kmsAdapter =
-  process.env.KEY_ENV === "gcp"
-    ? makeGcpKmsAdapter()
-    : makeLocalKmsAdapter();
+    process.env.KEY_ENV === "gcp"
+        ? makeGcpKmsAdapter()
+        : makeLocalKmsAdapter();
 
 const isEvm = (s: string) => /^0x[0-9a-fA-F]{40}$/.test(s.trim());
 const isHedera = (s: string) => /^\d+\.\d+\.\d+$/.test(s.trim());
@@ -153,7 +153,7 @@ router.post("/auth/nonce", async (req: Request, res: Response) => {
 // 2) Verify signature
 router.post("/auth/verify", async (req, res) => {
     const { accountId, signature, nonce } = req.body ?? {};
-    if ( !accountId || !signature || !nonce)
+    if (!accountId || !signature || !nonce)
         return res.status(400).json({ error: "Missing fields" });
 
     const { evm, hedera, kind } = normalize(accountId);
@@ -202,6 +202,140 @@ router.post("/auth/verify", async (req, res) => {
 
 // New routes
 
+/**
+ * PATCH /partners/:id
+ * Admin-only: Edit a partner's details
+ */
+router.post(
+    "/partners/:id",
+    requireAdminAuth,
+    async (req: Request, res: Response) => {
+        const { id } = req.params;
+        const {
+            name,
+            contact,
+            tier,
+            requestLimitOverride,
+            multiDrip,
+            accounts,
+        } = req.body;
+
+        try {
+            const result = await prisma.$transaction(async (tx) => {
+                // 1. Update the base partner fields
+                const updatedPartner = await tx.partner.update({
+                    where: { id },
+                    data: {
+                        ...(name && { name }),
+                        ...(contact !== undefined && { contact }),
+                        ...(tier && { tier }),
+                        ...(requestLimitOverride !== undefined && { requestLimitOverride }),
+                        ...(multiDrip !== undefined && { multiDrip }),
+                    },
+                });
+
+                // 2. Sync partner accounts if provided
+                let updatedAccounts: PartnerAccount[] = [];
+
+                if (Array.isArray(accounts)) {
+                    // Fetch existing accounts from DB
+                    const existingAccounts = await tx.partnerAccount.findMany({
+                        where: { partnerId: id },
+                    });
+
+                    const existingIds = existingAccounts.map((a) => a.id);
+                    const payloadIds = accounts
+                        .filter((a) => a.id)
+                        .map((a) => a.id as string);
+
+                    // (A) Delete accounts in DB that aren't in payload
+                    const toDeleteIds = existingIds.filter(
+                        (dbId) => !payloadIds.includes(dbId)
+                    );
+
+                    if (toDeleteIds.length > 0) {
+                        await tx.partnerAccount.deleteMany({
+                            where: { id: { in: toDeleteIds } },
+                        });
+                    }
+
+                    // (B) Create new accounts that don't exist in DB (no id in payload)
+                    const newAccounts = accounts.filter((a) => !a.id);
+                    if (newAccounts.length > 0) {
+                        await Promise.all(
+                            newAccounts.map((a: any) =>
+                                tx.partnerAccount.create({
+                                    data: {
+                                        partnerId: id,
+                                        type: a.type,
+                                        accountId: a.accountId,
+                                        network: a.network ?? "MAINNET",
+                                        chainId: a.type === "EVM" ? a.chainId ?? 1 : null,
+                                        role: a.role ?? "OWNER",
+                                        isLoginIdentity: a.isLoginIdentity ?? false,
+                                    },
+                                })
+                            )
+                        );
+                    }
+
+                    // (C) Keep existing accounts untouched
+                    updatedAccounts = await tx.partnerAccount.findMany({
+                        where: { partnerId: id },
+                    });
+                }
+
+                return { updatedPartner, updatedAccounts };
+            });
+
+            return res.status(200).json({
+                message: "Partner updated successfully",
+                partner: result.updatedPartner,
+                accounts: result.updatedAccounts,
+            });
+        } catch (error) {
+            console.error("Error updating partner:", error);
+            return res.status(500).json({ error: "Internal Server Error" });
+        }
+    }
+);
+
+
+
+/**
+ * POST /partners/:partnerId/accounts
+ * Admin-only: Add a new account for a partner
+ */
+router.post(
+    "/partners/:partnerId/accounts",
+    requireAdminAuth,
+    async (req: Request, res: Response) => {
+        const { partnerId } = req.params;
+        const { type, accountId, role } = req.body;
+
+        if (!type || !accountId) {
+            return res.status(400).json({ error: "Account type and accountId are required." });
+        }
+
+        try {
+            const newAccount = await prisma.partnerAccount.create({
+                data: {
+                    partnerId,
+                    type,
+                    accountId,
+                    role,
+                },
+            });
+            return res.status(201).json({ account: newAccount });
+        } catch (error) {
+            console.error("Error creating partner account:", error);
+            return res.status(500).json({ error: "Internal server error." });
+        }
+    }
+);
+
+
+// TODO edit account (not much additional info), account perms (More info needed, keeping it basic is fine i would think)
 /**
  * DELETE /partner/:id
  * Admin-only route: Delete
@@ -252,63 +386,5 @@ router.get(
         }
     }
 );
-
-
-/**
- * PATCH /partners/:id
- * Admin-only: Edit a partner's details
- */
-router.post("/partners/:id", requireAdminAuth, async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { name, contact, tier, requestLimitOverride } = req.body;
-
-  try {
-    const updatedPartner = await prisma.partner.update({
-      where: { id },
-      data: { name, contact, tier, requestLimitOverride },
-    });
-    return res.status(200).json({ partner: updatedPartner });
-  } catch (error) {
-
-    console.error("Error updating partner:", error);
-    return res.status(500).json({ error: "Internal server error." });
-  }
-});
-
-
-/**
- * POST /partners/:partnerId/accounts
- * Admin-only: Add a new account for a partner
- */
-router.post(
-  "/partners/:partnerId/accounts",
-  requireAdminAuth,
-  async (req: Request, res: Response) => {
-    const { partnerId } = req.params;
-    const { type, accountId , role } = req.body;
-
-    if (!type || !accountId) {
-      return res.status(400).json({ error: "Account type and accountId are required." });
-    }
-
-    try {
-      const newAccount = await prisma.partnerAccount.create({
-        data: {
-          partnerId,
-          type,
-          accountId,
-          role,
-        },
-      });
-      return res.status(201).json({ account: newAccount });
-    } catch (error) {
-      console.error("Error creating partner account:", error);
-      return res.status(500).json({ error: "Internal server error." });
-    }
-  }
-);
-
-
-// TODO edit account (not much additional info), account perms (More info needed, keeping it basic is fine i would think)
 
 export default router;
