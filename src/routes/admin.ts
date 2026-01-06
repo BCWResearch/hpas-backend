@@ -1,11 +1,14 @@
 import { Router, Request, Response } from "express";
-import { PrismaClient, PartnerAccount, AccountType } from "@prisma/client";
+import { PrismaClient, AccountType } from "@prisma/client";
 import { issueApiKey } from "../utils/apiKey"; // optional if you want to mint a key here
 import { makeGcpKmsAdapter, makeLocalKmsAdapter } from "../utils/kms/local";
 import crypto from "crypto";
+import { getHederaClient } from "../utils/getHederaClient";
 import { getAddress, verifyMessage } from "ethers";
-import { signSessionToken } from "../utils/jwt";
-import { requireAdminAuth } from "../middleware/adminAuth";
+import { signSessionToken, verifySessionToken } from "../utils/jwt";
+import { requireAdminAuth, requireAdminAuthentication } from "../middleware/adminAuth";
+import { AccountCreateTransaction, Hbar, PrivateKey } from "@hashgraph/sdk";
+import { sendEmail } from "../utils/email/email";
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -31,7 +34,9 @@ const normalize = (raw: string) => {
 };
 
 
-/**
+// PARTNER CRUD OPS
+
+/** C
  * POST /add-new-partner
  * Admin-only route: creates a new Partner record.
  * (Authentication/authorization middleware should wrap this router.)
@@ -40,8 +45,191 @@ const normalize = (raw: string) => {
  * 
  */
 
+
+
+router.post('/add-new-partner', async (req, res) => {
+    // checks to see if we can create a new partner
+    // need some sort of access key so only admin account can do this
+    const { name, threshold, dripAmountInUsd } = req.body;
+
+    const checkAvailability = await prisma.apiPartner.findUnique({
+        where: {
+            name
+        }
+    });
+
+    if (checkAvailability) {
+        return res.status(401).json({ code: 'USER_EXISTS' });
+    }
+    // create a new partner account:
+
+    // create client
+    const client = getHederaClient('mainnet');
+
+    // create new pvt/public keypair:
+    const newPrivateKey = PrivateKey.generateECDSA();
+    const newPublicKey = newPrivateKey.publicKey;
+
+
+
+    const transaction = new AccountCreateTransaction()
+        .setECDSAKeyWithAlias(newPublicKey)
+        .setInitialBalance(new Hbar(0.25));
+
+    const txResponse = await transaction.execute(client);
+    const receipt = await txResponse.getReceipt(client);
+    const newAccountId = receipt.accountId;
+
+
+    //TODO: encrypt private key with kms, public + encrypted pvt key will go to db,
+    const encryptedPrivateKey = await kmsAdapter.wrap(
+        Buffer.from(newPrivateKey.toBytes())
+    );
+
+    if (newAccountId) {
+
+        // update or insert new api User
+
+        // Public Key, partner name, partner email, threshold, role goes here.
+        const partner = await prisma.apiPartner.create({
+            data: {
+                name,
+                threshold,
+                encryptedPrivateKey,
+                dripAmountInUsd,
+                publicKey: newPublicKey.toStringDer(),
+                thresholdTriggered: false,
+                accountId: newAccountId.toString(),
+            }
+        });
+
+        if (partner) {
+
+            console.log('Heres the partner id:', partner.id);
+
+            // Create a new API Key, and issue it here (TODO)
+            const apiKey = await issueApiKey(prisma, kmsAdapter, {
+                apiPartnerId: partner.id,
+                env: "LIVE",
+                type: "FAUCET",
+                scopes: ["faucet:drip", "passport:score", "faucet:transactions"],
+            });
+            return res.status(200).json({ code: 'OK' });
+        }
+    }
+});
+
+// R
+
+// U
+router.post("/partners/:id", requireAdminAuthentication, async (req, res) => {
+    const { id } = req.params;
+    const { name, threshold, dripAmountInUsd, active } = req.body;
+
+    console.log("🧩 PARAM ID:", id);
+    console.log("🧩 BODY:", req.body);
+
+    const updated_partner = await prisma.apiPartner.update({
+        where: { id },
+        data: {
+            name,
+            threshold,
+            dripAmountInUsd,
+            active,
+        },
+    });
+
+    console.log("🧩 UPDATED RESULT:", updated_partner);
+
+    return res.json({ partner: updated_partner });
+});
+
+// a method to rotate account keys automatically
+router.post('/rotate/:id', requireAdminAuthentication, async (req, res) => {
+
+});
+
+// D
+
+router.get('/pause/:id', requireAdminAuthentication, async (req, res) => {
+    const { id } = req.params;
+    const partner = await prisma.apiPartner.findFirst({
+        where: { id },
+        select: { active: true }
+    });
+
+    if (!partner) { return res.status(404).json({ code: 'PARTNER_NOT_FOUND' }) }
+
+    const changed_partner = await prisma.apiPartner.update({
+        where: { id },
+        data: { active: !partner.active }
+    });
+
+    return res.status(200).json({ partner: changed_partner });
+});
+/*
+router.delete('/partners/:id', requireAdminAuthentication, async (req, res) => {
+    const { id } = req.params;
+
+    const partner = await prisma.apiPartner.delete({
+        where: { id },
+    });
+    if (!partner) { return res.status(403).json({ code: 'DELETE_FAILED' }) }
+    return res.status(200).json({ partner });
+
+})
+*/
+
+// USER CRUD OPS
+router.post('/invite-user-to-partner', requireAdminAuthentication, async (req, res) => {
+    const { partnerId, email, role } = req.body;
+
+    // Check if partner belongs to org already:
+    const partner = await prisma.apiPartner.findUnique({ where: { id: partnerId } });
+    const checkAvailability = await prisma.apiPartnerUser.findFirst({
+        where: {
+            email,
+        }
+    });
+    if (checkAvailability) {
+        return res.status(401).json({ code: 'USER_ALREADY_EXISTS' });
+    } else {
+        const user = await prisma.apiPartnerUser.create({
+            data: {
+                partnerId,
+                email,
+                role,
+                status: 'INVITED'
+            }
+        });
+        if (!user) {
+            return res.status(500).json({ code: 'Error adding user to org' });
+        }
+        // send email to invite user to org (TODO)
+
+        const subject = `Welcome to ${partner!.name}'s Faucet Team!`;
+        const html = `
+    <div style="font-family: system-ui,-apple-system,Segoe UI,Roboto,sans-serif;">
+      <h2>Hello ${email}</h2>
+      <p>
+      You have been invited to ${partner!.name}'s Faucet API Team. You can use the following link to sign in:
+    
+      </p>
+
+      <h3>EVM Accounts That Received Drips within the past 24 hours:</h3>
+    </div>
+  `;
+
+        await sendEmail(email, subject, html);
+        return res.status(200).json({ ok: true });
+    }
+}
+);
+
+/*
+
 router.post(
-    "/add-new-partner",
+    "/add-new-partner-1",
     requireAdminAuth,
     async (req: Request, res: Response): Promise<any> => {
         try {
@@ -109,10 +297,14 @@ router.post(
     }
 );
 
+*/
 
 
+// Will need a new sign in procedure for admins (BCW Entities ONLY)
 
+// Will need a similar thing for partners
 
+/*
 router.post("/auth/nonce", async (req: Request, res: Response) => {
     const { accountId } = req.body ?? {};
     if (!accountId) return res.status(400).json({ error: "Missing wallet" });
@@ -202,10 +394,14 @@ router.post("/auth/verify", async (req, res) => {
 
 // New routes
 
+*/
+
 /**
  * PATCH /partners/:id
  * Admin-only: Edit a partner's details
  */
+
+/*
 router.post(
     "/partners/:id",
     requireAdminAuth,
@@ -299,13 +495,15 @@ router.post(
         }
     }
 );
-
+*/
 
 
 /**
  * POST /partners/:partnerId/accounts
  * Admin-only: Add a new account for a partner
  */
+
+/*
 router.post(
     "/partners/:partnerId/accounts",
     requireAdminAuth,
@@ -334,13 +532,14 @@ router.post(
     }
 );
 
-
+*/
 // TODO edit account (not much additional info), account perms (More info needed, keeping it basic is fine i would think)
 /**
  * DELETE /partner/:id
  * Admin-only route: Delete
  */
 
+/*
 router.delete(
     "/partner/:id",
     requireAdminAuth,
@@ -365,21 +564,36 @@ router.delete(
         }
     }
 );
-
+*/
 /**
  * GET All partners
  * Admin-only route: fetch all partners
  */
 
+
+
 router.get(
     "/partners",
-    requireAdminAuth,
+    requireAdminAuthentication,
     async (req: Request, res: Response) => {
 
         try {
-            const allPartners = await prisma.partner.findMany({ include: { accounts: true, requestLogs: true } });
+            const allPartners = await prisma.apiPartner.findMany();
+            const partners = await Promise.all(
+                allPartners.map(async (p) => {
+                    const balance = await fetchPartnerBalanceFromApi(p.accountId);
 
-            return res.status(200).json({ allPartners })
+                    return {
+                        partner_id: p.id,
+                        partner_name: p.name,
+                        partner_drip_amount_in_usd: p.dripAmountInUsd,
+                        partner_threshold: p.threshold,
+                        partner_account_id: p.accountId,
+                        partner_balance: balance,
+                    };
+                })
+            );
+            return res.status(200).json({ partners });
         } catch (error) {
             console.error("Error fetching all partner:", error);
             return res.status(500).json({ error: "Internal server error." });
@@ -387,4 +601,12 @@ router.get(
     }
 );
 
+
 export default router;
+
+async function fetchPartnerBalanceFromApi(accountId: string) {
+    const res = await fetch(`https://mainnet.mirrornode.hedera.com/api/v1/accounts/${accountId}`);
+    const data = await res.json();
+    return Hbar.fromTinybars(data.balance.balance).toString();
+}
+

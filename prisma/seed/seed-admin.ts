@@ -17,6 +17,13 @@ async function main() {
             role: "SUPERADMIN",
         },
     });
+
+    await prisma.apiPartnerAdmin.createMany({
+        data: [
+            {email: 'sami@bcw.group'},
+        ],
+        skipDuplicates: true,
+    });
     console.log("✅ Master admin account seeded");
 }
 

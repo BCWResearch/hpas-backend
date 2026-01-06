@@ -32,3 +32,31 @@ export function requireRecentAdminStepUp(minutes = 1) {
     next();
   };
 }
+
+export async function requireAdminAuthentication(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  const token = req.cookies?.session;
+  if (!token) {
+    return res.status(401).json({ error: "Missing session" });
+  }
+
+  try {
+    const payload = await verifySessionToken(token);
+
+    if (!payload.isAdmin || !payload.adminId) {
+      return res.status(403).json({ error: "Admin privileges required" });
+    }
+
+    (req as any).admin = {
+      adminId: payload.adminId,
+      role: payload.role,
+    };
+    next();
+  } catch {
+    return res.status(401).json({ error: "Invalid or expired session" });
+  }
+}
+

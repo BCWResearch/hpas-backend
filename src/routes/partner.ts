@@ -8,8 +8,9 @@ import { getAddress, id, verifyMessage } from "ethers";
 import { sha256 } from "../utils/jwt";
 import { registerSecureJti, consumeSecureJti } from "../utils/secureJti";
 import { signSecureToken, signSessionToken } from "../utils/jwt";
-import { requireSessionAuth } from "../middleware/partnerAuth";
+import { requirePartnerAuthentication, requireSessionAuth } from "../middleware/partnerAuth";
 import { requireSecure } from "../middleware/secureGate";
+import { fetchPartnerBalanceInUsdAndHbarFromApi } from "../utils/balance/balanceUtil";
 
 const prisma = new PrismaClient();
 const router = Router();
@@ -48,6 +49,49 @@ const normalizeAccountId = (raw?: string) => {
   if (isHedera(t)) return { evm: null as string | null, hedera: t };
   return { evm: null as string | null, hedera: null as string | null, type: 'HEDERA' as AccountType };
 };
+
+
+router.get('/dashboard', requirePartnerAuthentication, async (req, res) => {
+  // need to return current account balance, account id, data for a usage graph, 
+  const { partnerId } = (req as any).user;
+
+  const partner = await prisma.apiPartner.findFirst({
+    where: {
+      id: partnerId,
+    }
+  });
+  if (!partner) { return res.status(404).json({code: 'PARTNER_NOT_FOUND'})}
+  const { hbar_balance, usd_balance } = await fetchPartnerBalanceInUsdAndHbarFromApi(partner.accountId);
+
+
+  return res.status(200).json({ 
+    partner: {
+      partner_id: partner.id,
+      partner_name: partner.name,
+      partner_account_id: partner.accountId,
+      partner_usd_balance: usd_balance,
+      partner_hbar_balance: hbar_balance,
+      partner_threshold: partner.threshold,
+      partner_drip_amount_in_usd: partner.dripAmountInUsd,
+      active: partner.active,
+    }
+  });
+});
+
+
+router.post('/refill-account', async (req, res) => {
+  // get the account id from BE transaction id 
+
+});
+
+
+
+
+
+
+
+
+
 
 // ==============================
 // PARTNER SESSION SIGN-IN (nonce)
@@ -248,7 +292,7 @@ router.post("/auth/verify", async (req, res) => {
 
   // 4) Validate the requested resource belongs to the partner
   const keyRow = await prisma.apiKey.findFirst({
-    where: { id: keyId, partnerId: member.partnerId },
+    where: { id: keyId, apiPartnerId: member.partnerId },
     select: { id: true, revoked: true },
   });
   if (!keyRow) return res.status(404).json({ error: "Key not found" });
@@ -388,7 +432,7 @@ router.get("/keys/:id/reveal",
   async (req, res) => {
     const { partnerId } = (req as any).auth;
     const key = await prisma.apiKey.findUnique({ where: { id: req.params.id } });
-    if (!key || key.partnerId !== partnerId) return res.status(404).json({ error: "Not found" });
+    if (!key || key.apiPartnerId !== partnerId) return res.status(404).json({ error: "Not found" });
     if (key.revoked) return res.status(400).json({ error: "Key revoked" });
 
     const plaintext = await revealApiKey(prisma, kms, key.id);

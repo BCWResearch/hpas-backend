@@ -110,7 +110,7 @@ export function redactKeyDisplay(plaintextOrPrefix: string) {
  *  ----------------------------*/
 
 export type IssueKeyInput = {
-  partnerId: string;
+  apiPartnerId: string;
   env: KeyEnv;
   type: KeyType;
   scopes?: string[];
@@ -142,7 +142,7 @@ export async function issueApiKey(
   kms: KmsAdapter,
   input: IssueKeyInput
 ): Promise<IssuedKey> {
-  const { partnerId, env, type } = input;
+  const { apiPartnerId, env, type } = input;
 
   // 1) Generate materials
   const prefixCore = input.prefixHint ? `${input.prefixHint}-${randToken(PREFIX_BYTES)}` : randToken(PREFIX_BYTES);
@@ -156,13 +156,13 @@ export async function issueApiKey(
   // 3) Encrypt plaintext with per-record DEK, wrapped via KMS
   const dek = crypto.randomBytes(32);
   const wrappedDek = await kms.wrap(dek);
-  const aad = Buffer.from(`${partnerId}|${env}|${type}|${prefix}`, "utf8");
+  const aad = Buffer.from(`${apiPartnerId}|${env}|${type}|${prefix}`, "utf8");
   const { ct, iv, tag } = aeadEncrypt(Buffer.from(plaintext, "utf8"), dek, aad);
 
   // 4) Persist ApiKey
   const key = await prisma.apiKey.create({
     data: {
-        partnerId,
+        apiPartnerId,
         keyHash,
         prefix,
         env,

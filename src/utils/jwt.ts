@@ -18,6 +18,7 @@ type BaseClaims = {
     adminId?: string;
     isAdmin: boolean;
     role?: "OWNER" | "ADMIN" | "VIEWER";
+    email?: string;
 };
 
 // long-lived (15m) session token for admins/partners
