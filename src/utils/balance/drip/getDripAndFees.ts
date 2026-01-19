@@ -7,19 +7,32 @@ let cachedDrip: { drip: number; tinydrip: number } | null = null;
 let lastFetched: number | null = null;
 let lastGoodUsdPerHBAR: number | null = null;
 
-export async function getDripAndFees(drip_amount_in_usd: any): Promise<{ drip_amount_in_hbar: number; fee_amount_in_hbar: number; total_amount_in_hbar: number; } | { drip_amount_in_hbar: number; fee_amount_in_hbar: number; total_amount_in_hbar: number; }> {
-    const now = Date.now();
+
+// TODO: THE PROBLEM IS HERE, THE DRIP + FEES != TOTAL SO ITS REJECTIGN THE TRANSACTION. DRIP + 
+export async function getDripAndFees(
+    drip_amount_in_usd: number
+): Promise<{
+    dripTinybar: number;
+    feeTinybar: number;
+    totalTinybar: number;
+}> {
+    const usdPerHBAR = await fetchUsdPerHbar();
 
     const fee_amount_in_usd = drip_amount_in_usd / 10;
 
-    // Cache this!!
-    const usdPerHBAR = await fetchUsdPerHbar(); // USD per 1 HBAR
+    const { tinybar_drip: dripTinybar } =
+        calcDripFromUsd(drip_amount_in_usd, usdPerHBAR);
 
-    const { hbar_drip: dripHBAR, tinybar_drip: dripTiny } = calcDripFromUsd(drip_amount_in_usd, usdPerHBAR);
-    const { hbar_drip: feeHBAR, tinybar_drip: feeTiny } = calcDripFromUsd(fee_amount_in_usd, usdPerHBAR);
+    const { tinybar_drip: feeTinybar } =
+        calcDripFromUsd(fee_amount_in_usd, usdPerHBAR);
 
-    return { drip_amount_in_hbar: dripHBAR, fee_amount_in_hbar: feeHBAR, total_amount_in_hbar: dripHBAR + feeHBAR };
+    return {
+        dripTinybar,
+        feeTinybar,
+        totalTinybar: dripTinybar + feeTinybar,
+    };
 }
+
 
 function calcDripFromUsd(dripUSD: number, usdPerHBAR: number) {
     // compute tinybars first to avoid float mismatch after rounding

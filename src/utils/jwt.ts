@@ -19,6 +19,7 @@ type BaseClaims = {
     isAdmin: boolean;
     role?: "OWNER" | "ADMIN" | "VIEWER";
     email?: string;
+    accountId?: string; 
 };
 
 // long-lived (15m) session token for admins/partners
@@ -31,10 +32,7 @@ export type SecureClaims = BaseClaims & {
     tokenType: "secure";
     // security bindings
     stepUpAt: number;         // ms since epoch when wallet proof was verified
-    scope: "reveal" | "regenerate";
-    resourceId: string;       // the keyId being operated on
-    method: "POST" | "GET";   // match actual route verb
-    path: string;             // exact route path, e.g. `/api/partner/keys/:id/reveal`
+    resourceId: string;       // the keyId being operated on 
     ipHash?: string;          // optional bind to client IP hash
     uaHash?: string;          // optional bind to UA hash
     jti: string;              // single-use id

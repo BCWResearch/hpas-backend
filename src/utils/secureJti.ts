@@ -16,3 +16,17 @@ export async function consumeSecureJti(jti: string) {
   if (row.expiresAt.getTime() < Date.now()) throw new Error("expired-jti");
   await prisma.secureTokenJti.update({ where: { jti }, data: { usedAt: new Date() } });
 }
+
+export async function assertSecureJtiValid(jti: string) {
+  const row = await prisma.secureTokenJti.findUnique({
+    where: { jti },
+  });
+
+  if (!row) {
+    throw new Error("unknown-jti");
+  }
+
+  if (row.expiresAt.getTime() < Date.now()) {
+    throw new Error("expired-jti");
+  }
+}

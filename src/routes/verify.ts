@@ -1,3 +1,4 @@
+/*
 import { Router, Request, Response } from "express";
 import { PrismaClient } from "@prisma/client";
 import { parsePlaintextKey } from "../utils/apiKey";
@@ -77,162 +78,164 @@ router.post("/verify-access", async (req: Request, res: Response) => {
   }
   console.log(effectiveLimit);
   */
-  if (effectiveLimit <= 0) {
-    return res.status(403).json({ error: "No request allowance for this partner" });
-  }
-  //console.log(effectiveLimit);
+/*
+ if (effectiveLimit <= 0) {
+   return res.status(403).json({ error: "No request allowance for this partner" });
+ }
+ //console.log(effectiveLimit);
 
-  // Windowing (per key + route + fixed-size window)
-  const windowSeconds = DEFAULT_WINDOW_SECONDS;
-  const now = new Date();
-  const windowStart = new Date(Math.floor(now.getTime() / (windowSeconds * 1000)) * (windowSeconds * 1000));
-  const windowEnd = new Date(windowStart.getTime() + windowSeconds * 1000);
+ // Windowing (per key + route + fixed-size window)
+ const windowSeconds = DEFAULT_WINDOW_SECONDS;
+ const now = new Date();
+ const windowStart = new Date(Math.floor(now.getTime() / (windowSeconds * 1000)) * (windowSeconds * 1000));
+ const windowEnd = new Date(windowStart.getTime() + windowSeconds * 1000);
 
-  try {
-    // Atomic upsert + increment
-    const usage = await prisma.apiUsageWindow.upsert({
-      where: {
-        apiKeyId_route_windowStart_windowEnd: {
-          apiKeyId: key.id,
-          route: originalRoute,
-          windowStart,
-          windowEnd,
-        },
-      },
-      update: { count: { increment: costUnits } },
-      create: {
-        partnerId: key.partnerId,
-        apiKeyId: key.id,
-        route: originalRoute,
-        windowStart,
-        windowEnd,
-        count: costUnits,
-      },
-    });
-    // console.log('6');
-    if (usage.count > effectiveLimit) {
-      // Optional: also write a log row for rejected attempts
-      await prisma.apiRequestLog.create({
-        data: {
-          partnerId: key.partnerId,
-          apiKeyId: key.id,
-          route: originalRoute,
-          statusCode: 429,
-          costUnits,
-          ipHash: hashIp(req.ip),
-        },
-      });
+ try {
+   // Atomic upsert + increment
+   const usage = await prisma.apiUsageWindow.upsert({
+     where: {
+       apiKeyId_route_windowStart_windowEnd: {
+         apiKeyId: key.id,
+         route: originalRoute,
+         windowStart,
+         windowEnd,
+       },
+     },
+     update: { count: { increment: costUnits } },
+     create: {
+       partnerId: key.partnerId,
+       apiKeyId: key.id,
+       route: originalRoute,
+       windowStart,
+       windowEnd,
+       count: costUnits,
+     },
+   });
+   // console.log('6');
+   if (usage.count > effectiveLimit) {
+     // Optional: also write a log row for rejected attempts
+     await prisma.apiRequestLog.create({
+       data: {
+         partnerId: key.partnerId,
+         apiKeyId: key.id,
+         route: originalRoute,
+         statusCode: 429,
+         costUnits,
+         ipHash: hashIp(req.ip),
+       },
+     });
 
-      // console.log('7');
+     // console.log('7');
 
-      return res.status(429).json({
-        error: "Rate limit exceeded",
-        limit: effectiveLimit,
-        windowSeconds,
-        route: originalRoute,
-      });
+     return res.status(429).json({
+       error: "Rate limit exceeded",
+       limit: effectiveLimit,
+       windowSeconds,
+       route: originalRoute,
+     });
 
 
-    }
-  } catch (e) {
-    console.error("Rate-limit upsert failed", e);
-    return res.status(500).json({ error: "Internal Error (rate limiting)" });
-  }
-  try {
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-    const monthlyLimit = effectiveLimit;
-    const monthUsage = await prisma.apiUsageMonth.upsert({
-      where: {
-        apiKeyId_monthStart_monthEnd: {
-          apiKeyId: key.id,
-          monthStart,
-          monthEnd,
-        },
-      },
-      update: { count: { increment: costUnits } },
-      create: {
-        partnerId: key.partnerId,
-        apiKeyId: key.id,
-        monthStart,
-        monthEnd,
-        count: costUnits,
-      },
-    });
+   }
+ } catch (e) {
+   console.error("Rate-limit upsert failed", e);
+   return res.status(500).json({ error: "Internal Error (rate limiting)" });
+ }
+ try {
+   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+   const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+   const monthlyLimit = effectiveLimit;
+   const monthUsage = await prisma.apiUsageMonth.upsert({
+     where: {
+       apiKeyId_monthStart_monthEnd: {
+         apiKeyId: key.id,
+         monthStart,
+         monthEnd,
+       },
+     },
+     update: { count: { increment: costUnits } },
+     create: {
+       partnerId: key.partnerId,
+       apiKeyId: key.id,
+       monthStart,
+       monthEnd,
+       count: costUnits,
+     },
+   });
 
-    if (monthlyLimit > 0 && monthUsage.count > monthlyLimit) {
-      await prisma.apiRequestLog.create({
-        data: {
-          partnerId: key.partnerId,
-          apiKeyId: key.id,
-          route: originalRoute,
-          statusCode: 429,
-          costUnits,
-          ipHash: hashIp(req.ip),
-        },
-      });
-      return res.status(429).json({
-        error: "Monthly limit exceeded",
-        limit: monthlyLimit,
-        route: originalRoute,
-      });
-    }
-  } catch (e) {
-    console.error("Monthly-limit upsert failed", e);
-    return res.status(500).json({ error: "Internal Error (monthly rate limiting)" });
-  }
+   if (monthlyLimit > 0 && monthUsage.count > monthlyLimit) {
+     await prisma.apiRequestLog.create({
+       data: {
+         partnerId: key.partnerId,
+         apiKeyId: key.id,
+         route: originalRoute,
+         statusCode: 429,
+         costUnits,
+         ipHash: hashIp(req.ip),
+       },
+     });
+     return res.status(429).json({
+       error: "Monthly limit exceeded",
+       limit: monthlyLimit,
+       route: originalRoute,
+     });
+   }
+ } catch (e) {
+   console.error("Monthly-limit upsert failed", e);
+   return res.status(500).json({ error: "Internal Error (monthly rate limiting)" });
+ }
 
-  // 6) Optional: request log (non-blocking semantics if failure)
-  try {
-    console.log('8');
-    await prisma.apiRequestLog.create({
-      data: {
-        partnerId: key.partnerId,
-        apiKeyId: key.id,
-        route: originalRoute,
-        statusCode: 200,
-        costUnits,
-        ipHash: hashIp(req.ip),
-      },
-    });
-    // lightweight "last used" update (don’t await)
-    console.log('9');
-    prisma.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date() } }).catch(() => { });
-  } catch (e) {
-    // swallow logging errors
-    console.warn("request log write failed", e);
-  }
-  console.log('10');
+ // 6) Optional: request log (non-blocking semantics if failure)
+ try {
+   console.log('8');
+   await prisma.apiRequestLog.create({
+     data: {
+       partnerId: key.partnerId,
+       apiKeyId: key.id,
+       route: originalRoute,
+       statusCode: 200,
+       costUnits,
+       ipHash: hashIp(req.ip),
+     },
+   });
+   // lightweight "last used" update (don’t await)
+   console.log('9');
+   prisma.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date() } }).catch(() => { });
+ } catch (e) {
+   // swallow logging errors
+   console.warn("request log write failed", e);
+ }
+ console.log('10');
 
-  // 7) Success — return context for upstream (if you want)
-  res.status(200).json({
-    ok: true,
-    partner: {
-      id: key.partner.id,
-      name: key.partner.name,
-      tier: key.partner.tier,
-      multiDrip: key.partner.multiDrip
-    },
-    apiKey: {
-      id: key.id,
-      env: key.env,
-      type: key.type,
-      prefix: key.prefix,
-    },
-    scope: requiredScope,
-    route: originalRoute,
-  });
-  return;
+ // 7) Success — return context for upstream (if you want)
+ res.status(200).json({
+   ok: true,
+   partner: {
+     id: key.partner.id,
+     name: key.partner.name,
+     tier: key.partner.tier,
+     multiDrip: key.partner.multiDrip
+   },
+   apiKey: {
+     id: key.id,
+     env: key.env,
+     type: key.type,
+     prefix: key.prefix,
+   },
+   scope: requiredScope,
+   route: originalRoute,
+ });
+ return;
 });
 
 export default router;
 
 // --- tiny helpers ---
 function hashIp(ip: string | undefined): string | undefined {
-  if (!ip) return undefined;
-  try {
-    return require("crypto").createHash("sha256").update(ip).digest("hex");
-  } catch {
-    return undefined;
-  }
+ if (!ip) return undefined;
+ try {
+   return require("crypto").createHash("sha256").update(ip).digest("hex");
+ } catch {
+   return undefined;
+ }
 }
+ */

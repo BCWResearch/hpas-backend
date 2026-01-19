@@ -39,12 +39,15 @@ export async function requirePartnerAuthentication(
       return res.status(403).json({ error: "Admin Token detected" });
     }
 
+    if (!payload.memberId || !payload.partnerId|| !payload.role) {
+      return res.status(403).json({ error: "Error fetching user data" });
+    }
     (req as any).user = {
       userId: payload.memberId,
       partnerId: payload.partnerId,
       role: payload.role,
     };
-    
+
     next();
   } catch {
     return res.status(401).json({ error: "Invalid or expired session" });

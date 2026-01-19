@@ -6,10 +6,9 @@ import cookieParser from "cookie-parser";
 
 
 import partnerRouter from "./routes/partner";
-import accessRouter from "./routes/verify"; // the /verify-access router file
 import adminRouter from "./routes/admin";   // where /add-new-partner lives
-import userRouter from "./routes/user";
 import authRouter from "./routes/auth";
+import apiRouter from "./routes/api";
 const app = express();
 const prisma = new PrismaClient();
 const PORT = Number(process.env.PORT) || 3003;
@@ -40,10 +39,9 @@ const corsOptions: cors.CorsOptions = {
 
 app.use(cors(corsOptions));
 app.use("/api/partner", partnerRouter);
-app.use("/api/access", accessRouter);
 app.use("/api/admin", adminRouter);
-app.use("/api/user", userRouter);
 app.use("/api/auth", authRouter);
+app.use("/api", apiRouter);
 
 app.get("/health", async (_req, res) => {
   try { await prisma.$queryRaw`SELECT 1`; res.json({ status: "ok", db: "connected" }); }

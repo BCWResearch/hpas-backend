@@ -24,6 +24,7 @@
   "description": "",
   "dependencies": {
     "@google-cloud/kms": "^5.2.0",
+    "@hashgraph/proto": "^2.25.0",
     "@hashgraph/sdk": "^2.78.0",
     "@prisma/client": "^6.15.0",
     "argon2": "^0.44.0",

@@ -1,14 +1,10 @@
 import { Router, Request, Response } from "express";
-import { PrismaClient, AccountType } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import { issueApiKey } from "../utils/apiKey"; // optional if you want to mint a key here
 import { makeGcpKmsAdapter, makeLocalKmsAdapter } from "../utils/kms/local";
-import crypto from "crypto";
 import { getHederaClient } from "../utils/getHederaClient";
-import { getAddress, verifyMessage } from "ethers";
-import { signSessionToken, verifySessionToken } from "../utils/jwt";
-import { requireAdminAuth, requireAdminAuthentication } from "../middleware/adminAuth";
+import { requireAdminAuthentication } from "../middleware/adminAuth";
 import { AccountCreateTransaction, Hbar, PrivateKey } from "@hashgraph/sdk";
-import { sendEmail } from "../utils/email/email";
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -17,21 +13,7 @@ const kmsAdapter =
         ? makeGcpKmsAdapter()
         : makeLocalKmsAdapter();
 
-const isEvm = (s: string) => /^0x[0-9a-fA-F]{40}$/.test(s.trim());
-const isHedera = (s: string) => /^\d+\.\d+\.\d+$/.test(s.trim());
 
-const normalize = (raw: string) => {
-    const t = (raw ?? "").trim();
-    if (isEvm(t)) {
-        // canonical: lowercase with 0x
-        return { evm: t.toLowerCase(), hedera: null as string | null, kind: 'EVM' as AccountType };
-    }
-    if (isHedera(t)) {
-        // canonical: keep as-is (Hedera IDs are numeric dotted)
-        return { evm: null as string | null, hedera: t, kind: 'HEDERA' as AccountType };
-    }
-    return { evm: null as string | null, hedera: null as string | null, kind: null };
-};
 
 
 // PARTNER CRUD OPS
@@ -47,7 +29,7 @@ const normalize = (raw: string) => {
 
 
 
-router.post('/add-new-partner', async (req, res) => {
+router.post('/add-new-partner', requireAdminAuthentication, async (req, res) => {
     // checks to see if we can create a new partner
     // need some sort of access key so only admin account can do this
     const { name, threshold, dripAmountInUsd } = req.body;
@@ -78,6 +60,14 @@ router.post('/add-new-partner', async (req, res) => {
 
     const txResponse = await transaction.execute(client);
     const receipt = await txResponse.getReceipt(client);
+
+    if (receipt.status.toString() !== "SUCCESS") {
+        return res.status(500).json({
+            code: "ACCOUNT_CREATION_FAILED",
+            status: receipt.status.toString(),
+        });
+    }
+
     const newAccountId = receipt.accountId;
 
 
@@ -108,7 +98,7 @@ router.post('/add-new-partner', async (req, res) => {
             console.log('Heres the partner id:', partner.id);
 
             // Create a new API Key, and issue it here (TODO)
-            const apiKey = await issueApiKey(prisma, kmsAdapter, {
+            await issueApiKey(prisma, kmsAdapter, {
                 apiPartnerId: partner.id,
                 env: "LIVE",
                 type: "FAUCET",
@@ -126,9 +116,6 @@ router.post("/partners/:id", requireAdminAuthentication, async (req, res) => {
     const { id } = req.params;
     const { name, threshold, dripAmountInUsd, active } = req.body;
 
-    console.log("🧩 PARAM ID:", id);
-    console.log("🧩 BODY:", req.body);
-
     const updated_partner = await prisma.apiPartner.update({
         where: { id },
         data: {
@@ -139,7 +126,6 @@ router.post("/partners/:id", requireAdminAuthentication, async (req, res) => {
         },
     });
 
-    console.log("🧩 UPDATED RESULT:", updated_partner);
 
     return res.json({ partner: updated_partner });
 });
@@ -181,14 +167,14 @@ router.delete('/partners/:id', requireAdminAuthentication, async (req, res) => {
 */
 
 // USER CRUD OPS
-router.post('/invite-user-to-partner', requireAdminAuthentication, async (req, res) => {
-    const { partnerId, email, role } = req.body;
+router.post('/add-user-to-partner', requireAdminAuthentication, async (req, res) => {
+    const { partnerId, accountId, role } = req.body;
 
     // Check if partner belongs to org already:
-    const partner = await prisma.apiPartner.findUnique({ where: { id: partnerId } });
+    await prisma.apiPartner.findUnique({ where: { id: partnerId } });
     const checkAvailability = await prisma.apiPartnerUser.findFirst({
         where: {
-            email,
+            accountId,
         }
     });
     if (checkAvailability) {
@@ -197,7 +183,7 @@ router.post('/invite-user-to-partner', requireAdminAuthentication, async (req, r
         const user = await prisma.apiPartnerUser.create({
             data: {
                 partnerId,
-                email,
+                accountId,
                 role,
                 status: 'INVITED'
             }
@@ -205,22 +191,6 @@ router.post('/invite-user-to-partner', requireAdminAuthentication, async (req, r
         if (!user) {
             return res.status(500).json({ code: 'Error adding user to org' });
         }
-        // send email to invite user to org (TODO)
-
-        const subject = `Welcome to ${partner!.name}'s Faucet Team!`;
-        const html = `
-    <div style="font-family: system-ui,-apple-system,Segoe UI,Roboto,sans-serif;">
-      <h2>Hello ${email}</h2>
-      <p>
-      You have been invited to ${partner!.name}'s Faucet API Team. You can use the following link to sign in:
-    
-      </p>
-
-      <h3>EVM Accounts That Received Drips within the past 24 hours:</h3>
-    </div>
-  `;
-
-        await sendEmail(email, subject, html);
         return res.status(200).json({ ok: true });
     }
 }

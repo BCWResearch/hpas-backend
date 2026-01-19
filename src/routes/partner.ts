@@ -1,17 +1,23 @@
 // src/routes/partner.ts
 import { Router, Request, Response, NextFunction } from "express";
-import { PrismaClient, AccountType } from "@prisma/client";
+import { PrismaClient, AccountType, PartnerUserRole, Prisma, PartnerUserStatus } from "@prisma/client";
 import crypto from "crypto";
 import { issueApiKey, revealApiKey } from "../utils/apiKey";
 import { makeGcpKmsAdapter, makeLocalKmsAdapter } from "../utils/kms/local"; // swap to GCP in prod
-import { getAddress, id, verifyMessage } from "ethers";
-import { sha256 } from "../utils/jwt";
-import { registerSecureJti, consumeSecureJti } from "../utils/secureJti";
-import { signSecureToken, signSessionToken } from "../utils/jwt";
-import { requirePartnerAuthentication, requireSessionAuth } from "../middleware/partnerAuth";
+import { requirePartnerAuthentication } from "../middleware/partnerAuth";
 import { requireSecure } from "../middleware/secureGate";
 import { fetchPartnerBalanceInUsdAndHbarFromApi } from "../utils/balance/balanceUtil";
+import { checkRole } from "../utils/checkRole";
+import { getHederaClient } from "../utils/getHederaClient";
+import { AccountUpdateTransaction, Client, Hbar, HbarUnit, PrivateKey, TransactionId, TransactionReceiptQuery } from "@hashgraph/sdk";
+import { sendEmail } from "../utils/email/email";
+import { getPartnerKeyFromKMS } from "./api";
+import { lock } from "ethers";
 
+const kmsAdapter =
+  process.env.KEY_ENV === "gcp"
+    ? makeGcpKmsAdapter()
+    : makeLocalKmsAdapter();
 const prisma = new PrismaClient();
 const router = Router();
 const kms =
@@ -50,6 +56,224 @@ const normalizeAccountId = (raw?: string) => {
   return { evm: null as string | null, hedera: null as string | null, type: 'HEDERA' as AccountType };
 };
 
+function getRangeStart(range: string) {
+  switch (range) {
+    case '7d': return '7 days'
+    case '90d': return '90 days'
+    default: return '30 days'
+  }
+}
+
+function generateVerificationToken() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+
+async function sendVerificationEmail(email: string, token: string, name: string) {
+  const verifyUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
+  const html = `
+      <p>You were added as an email identity for ${name}'s HDrip account.</p>
+      <p>Please verify your email by clicking the link below:</p>
+      <a href="${verifyUrl}">Verify Email</a>
+      <p>This link expires in 24 hours.</p>
+    `;
+
+  await sendEmail(
+    email,
+    "Verify your email",
+    html);
+}
+
+router.post("/rotate-account", requirePartnerAuthentication, async (req, res) => {
+  const { partnerId, role } = (req as any).user;
+
+  if (!checkRole(role, [PartnerUserRole.OWNER])) {
+    return res.status(401).json({ code: "UNAUTHORIZED" });
+  }
+
+  const partner = await prisma.apiPartner.findFirst({ where: { id: partnerId } });
+  if (!partner) return res.status(404).json({ code: "PARTNER_NOT_FOUND" });
+
+  // Get current key from KMS so we can sign the update
+  const { sender_account_pkey } = await getPartnerKeyFromKMS(partner.accountId);
+
+  const client = Client.forMainnet();
+  client.setOperator(partner.accountId, sender_account_pkey);
+
+  // Generate next keypair
+  const newPrivateKey = PrivateKey.generateECDSA();
+  const newPublicKey = newPrivateKey.publicKey;
+
+  // Wrap first so KMS failure doesn't happen after we rotate
+  let encryptedPrivateKey: Buffer;
+  try {
+    encryptedPrivateKey = await kmsAdapter.wrap(Buffer.from(newPrivateKey.toBytes()));
+  } catch (e) {
+    return res.status(500).json({ code: "KMS_WRAP_FAILED" });
+  }
+
+  // Rotate on-chain
+  const tx = new AccountUpdateTransaction()
+    .setAccountId(partner.accountId)
+    .setKey(newPublicKey);
+
+  const txResponse = await tx.execute(client);
+  const receipt = await txResponse.getReceipt(client);
+
+  const status = receipt.status.toString();
+  if (status !== "SUCCESS") {
+    return res.status(500).json({ code: "ROTATION_FAILED", status });
+  }
+
+  // Persist in DB
+  const updatedPartner = await prisma.apiPartner.update({
+    where: { id: partnerId },
+    data: {
+      encryptedPrivateKey,
+      publicKey: newPublicKey.toStringDer(),
+      // don't reset unrelated fields unless you intend to
+    },
+  });
+
+  // Create a new API Key, and issue it here (TODO)
+  const apiKey = await issueApiKey(prisma, kmsAdapter, {
+    apiPartnerId: updatedPartner.id,
+    env: "LIVE",
+    type: "FAUCET",
+    scopes: ["faucet:drip", "passport:score", "faucet:transactions"],
+  });
+  return res.status(200).json({ code: 'OK' });
+});
+
+
+router.post('/threshold', requirePartnerAuthentication, async (req, res) => {
+  const { partnerId, role } = (req as any).user;
+  const { threshold } = req.body;
+  if (!checkRole(role, [PartnerUserRole.ADMIN, PartnerUserRole.OWNER])) { return res.status(401).json({ code: 'UNAUTHORIZED' }) }
+  const thres = await prisma.apiPartner.update({
+    where: { id: partnerId }, data: { threshold, thresholdTriggered: false },
+  });
+  if (!thres) { return res.status(500).json({ code: 'THRESHOLD AMOUNT UPDATE FAILED' }) }
+  return res.status(200).json({ threshold });
+});
+
+
+router.post('/drip-amount', requirePartnerAuthentication, async (req, res) => {
+  const { partnerId, role } = (req as any).user;
+  const { dripAmountInUsd } = req.body;
+  if (!checkRole(role, [PartnerUserRole.ADMIN, PartnerUserRole.OWNER])) { return res.status(401).json({ code: 'UNAUTHORIZED' }) }
+  const drip = await prisma.apiPartner.update({
+    where: { id: partnerId }, data: { dripAmountInUsd },
+  });
+  if (!drip) { return res.status(500).json({ code: 'DRIP AMOUNT UPDATE FAILED' }) }
+  return res.status(200).json({ dripAmountInUsd });
+})
+
+// crud for email system
+router.get('/emails', requirePartnerAuthentication, async (req, res) => {
+  const { role, partnerId } = (req as any).user;
+
+  if (!checkRole(role, [PartnerUserRole.OWNER, PartnerUserRole.ADMIN])) {
+    return res.status(401).json({ code: 'UNAUTHORIZED' });
+  }
+
+  const partner = await prisma.apiPartner.findUnique({
+    where: { id: partnerId },
+    select: { emails: true },
+  });
+
+  if (!partner) {
+    return res.status(404).json({ code: 'PARTNER_NOT_FOUND' });
+  }
+
+  return res.status(200).json({
+    emails: partner.emails,
+  });
+});
+
+router.post("/add-email", requirePartnerAuthentication, async (req, res) => {
+  const { partnerId, role } = (req as any).user;
+  const { emails } = req.body;
+
+  if (!checkRole(role, [PartnerUserRole.ADMIN, PartnerUserRole.OWNER])) {
+    return res.status(401).json({ code: "UNAUTHORIZED" });
+  }
+  const partner = await prisma.apiPartner.findFirst({ where: { id: partnerId }, select: { name: true } })
+  for (const email of emails) {
+    const created = await prisma.email.create({
+      data: {
+        email,
+        partnerId,
+        verified: false,
+      },
+    });
+
+    const token = generateVerificationToken();
+
+    await prisma.emailVerification.create({
+      data: {
+        emailId: created.id,
+        token,
+        expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24),
+      },
+    });
+
+    await sendVerificationEmail(email, token, partner?.name!);
+  }
+
+  return res.status(200).json({ success: true });
+});
+router.delete("/remove-email/:id", requirePartnerAuthentication, async (req, res) => {
+  const { partnerId, role } = (req as any).user;
+  const { id } = req.params;
+
+  if (!checkRole(role, [PartnerUserRole.ADMIN, PartnerUserRole.OWNER])) {
+    return res.status(401).json({ code: "UNAUTHORIZED" });
+  }
+  const partner = await prisma.apiPartner.findFirst({ where: { id: partnerId }, select: { name: true } })
+  const created = await prisma.email.delete({
+    where: { id }
+  });
+
+  return res.status(200).json({ success: true });
+});
+
+router.get("/verify-email", async (req, res) => {
+  const { token } = req.query;
+
+  if (!token || typeof token !== "string") {
+    return res.status(400).send("Invalid token");
+  }
+
+  const record = await prisma.emailVerification.findUnique({
+    where: { token },
+    include: { email: true },
+  });
+  console.log(record);
+  if (!record || record.expiresAt < new Date()) {
+    return res.status(400).send("Token expired or invalid");
+  }
+
+  await prisma.$transaction([
+    prisma.email.update({
+      where: { id: record.emailId },
+      data: { verified: true },
+    }),
+    prisma.emailVerification.delete({
+      where: { id: record.id },
+    }),
+  ]);
+
+  return res.status(200).json({ success: true });
+});
+
+
+router.post('/balance', requirePartnerAuthentication, async (req, res) => {
+  const { accountId } = req.body;
+  if (!accountId) { return res.status(404).json({ code: 'ACCOUNT_NOT_FOUND' }) }
+  const { hbar_balance, usd_balance } = await fetchPartnerBalanceInUsdAndHbarFromApi(accountId);
+  return res.status(200).json({ balance: { hbar_balance, usd_balance } });
+});
 
 router.get('/dashboard', requirePartnerAuthentication, async (req, res) => {
   // need to return current account balance, account id, data for a usage graph, 
@@ -60,11 +284,11 @@ router.get('/dashboard', requirePartnerAuthentication, async (req, res) => {
       id: partnerId,
     }
   });
-  if (!partner) { return res.status(404).json({code: 'PARTNER_NOT_FOUND'})}
+  if (!partner) { return res.status(404).json({ code: 'PARTNER_NOT_FOUND' }) }
   const { hbar_balance, usd_balance } = await fetchPartnerBalanceInUsdAndHbarFromApi(partner.accountId);
 
 
-  return res.status(200).json({ 
+  return res.status(200).json({
     partner: {
       partner_id: partner.id,
       partner_name: partner.name,
@@ -84,279 +308,265 @@ router.post('/refill-account', async (req, res) => {
 
 });
 
+router.post("/pause", requirePartnerAuthentication, async (req, res) => {
+  const { faucet_paused } = req.body as { faucet_paused: boolean };
+  const { partnerId, role } = (req as any).user;
 
-
-
-
-
-
-
-
-
-// ==============================
-// PARTNER SESSION SIGN-IN (nonce)
-// ==============================
-
-// 1) get a one-time nonce tied to wallet (+ optional network/chainId)
-router.post("/auth/signin/nonce", async (req, res) => {
-  const { accountId, network, chainId } = req.body ?? {};
-  if (!accountId) return res.status(400).json({ error: "Missing wallet" });
-
-  // Optional: early format guard
-  const { evm, hedera, type } = normalizeAccountId(accountId);
-  if (!evm && !hedera || !type) return res.status(400).json({ error: "Invalid wallet format" });
-
-  // Only mint a nonce if this wallet is actually allowed to sign in
-  const loginIdentity = await prisma.partnerAccount.findFirst({
-    where: {
-      type,
-      accountId: { equals: accountId, mode: "insensitive" },
-      network: network ?? "MAINNET",
-      chainId: type === "EVM" ? (chainId ?? 1) : null,
-      isLoginIdentity: true,
-    },
-    select: { id: true },
-  });
-  if (!loginIdentity) return res.status(401).json({ error: "Invalid Login Identity" });
-
-  const nonce = `signin:${Date.now()}:${crypto.randomBytes(16).toString("hex")}`;
-  const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
-
-  await prisma.walletLoginNonce.create({
-    data: {
-      type,
-      accountId, // keep raw; we’ll match by nonce later
-      network: network ?? "MAINNET",
-      chainId: type === "EVM" ? (chainId ?? 1) : null,
-      nonce,
-      expiresAt,
-    },
-  });
-
-  res.status(200).json({ nonce, expiresAt });
-  return;
-});
-
-// 2) wallet signs the nonce → verify → issue 15m SESSION JWT
-router.post("/auth/signin/verify", async (req, res) => {
-  const { accountId, signature, nonce } = req.body ?? {};
-  if (!accountId || !signature || !nonce)
-    return res.status(400).json({ error: "Missing fields" });
-
-  const { evm, hedera, type } = normalizeAccountId(accountId);
-  if (!evm && !hedera || !type) return res.status(400).json({ error: "Invalid wallet format" });
-
-  // Find the freshest, unconsumed nonce by nonce value (avoids case-sensitivity pitfalls)
-  const rec = await prisma.walletLoginNonce.findFirst({
-    where: { nonce, consumedAt: null, expiresAt: { gt: new Date() } },
-    orderBy: { expiresAt: "desc" },
-  });
-  if (!rec) return res.status(401).json({ error: "Invalid or expired nonce" });
-  if (rec.type !== type) return res.status(401).json({ error: "Kind mismatch" });
-
-  // Verify signature for EVM; TODO: add Hedera path if needed
-  if (type === "EVM") {
-    const recovered = verifyMessage(rec.nonce, signature);
-    if (getAddress(recovered) !== getAddress(accountId)) {
-      return res.status(401).json({ error: "Signature mismatch" });
-    }
-  } else {
-    // Implement HashPack / Hedera verification when ready
-    return res.status(400).json({ error: "Hedera sign-in not implemented yet" });
+  if (!checkRole(role, [PartnerUserRole.OWNER, PartnerUserRole.ADMIN])) {
+    return res.status(403).json({ code: "USER_DENIED" });
   }
 
-  // Mark nonce consumed
-  await prisma.walletLoginNonce.update({
-    where: { id: rec.id },
-    data: { consumedAt: new Date() },
+  await prisma.apiPartner.update({
+    where: { id: partnerId },
+    // active = !paused
+    data: { active: !faucet_paused },
   });
 
-  // Map wallet → member (must be a login identity)
-  const member = await prisma.partnerAccount.findFirst({
+  return res.status(200).json({ faucet_paused });
+});
+
+
+router.get("/pause", requirePartnerAuthentication, async (req, res) => {
+  const { partnerId, role } = (req as any).user;
+
+  if (!checkRole(role, [PartnerUserRole.OWNER, PartnerUserRole.ADMIN])) {
+    return res.status(403).json({ code: "USER_DENIED" });
+  }
+
+  const lockState = await prisma.apiPartner.findFirst({
+    where: { id: partnerId },
+    select: { active: true },
+  });
+
+  if (!lockState) {
+    return res.status(404).json({ code: "NO_LOCK", message: "No Lock State found" });
+  }
+
+  // paused = !active
+  return res.status(200).json({ faucet_paused: !lockState.active });
+});
+
+
+router.post("/confirm", requirePartnerAuthentication, async (req, res) => {
+  console.log('REQ BODY:', req.body);
+  const { transactionId } = req.body;
+  if (!transactionId) {
+    return res.status(400).json({ error: "Missing fields" });
+  }
+  const client = getHederaClient('mainnet');
+  try {
+    const receipt = await new TransactionReceiptQuery()
+      .setTransactionId(TransactionId.fromString(transactionId))
+      .execute(client)
+
+    if (receipt.status?.toString() !== "SUCCESS") {
+      return res.status(409).json({
+        error: "Transaction failed",
+        status: receipt.status?.toString(),
+      });
+    }
+
+    return res.json({
+      status: "FINALIZED",
+      transactionId,
+      confirmedAt: new Date().toISOString(),
+    });
+
+  } catch (err) {
+    console.error("Tx confirmation failed:", err);
+
+    return res.status(500).json({
+      error: "Unable to confirm transaction",
+    });
+  }
+});
+
+router.get("/transactions", requirePartnerAuthentication, async (req, res) => {
+  const { partnerId } = (req as any).user;
+
+  const transactions = await prisma.partnerTransactionHistory.findMany({
     where: {
-      type,
-      accountId: { equals: accountId, mode: "insensitive" },
-      network: rec.network,
-      chainId: rec.chainId ?? undefined,
-      isLoginIdentity: true,
+      partnerId,
     },
-    select: { id: true, partnerId: true, role: true },
+    orderBy: {
+      timestamp: 'desc',
+    },
   });
-  if (!member) return res.status(403).json({ error: "Wallet not authorized for this partner" });
+  if (!transactions) {
+    return res.status(404).json({ code: 'TRANSACTIONS_NOT_FOUND' });
+  }
 
-  // Issue a 15-minute SESSION token (not a secure 20s token)
-  const portalToken = await signSessionToken(
+  const safeTransactions = transactions.map(tx => ({
+    ...tx,
+    amountTinybar: Hbar.fromString(tx.amountTinybar.toString(), HbarUnit.Tinybar).toString(), // BigInt → string
+    timestamp: tx.timestamp.toISOString(),      // Date → string
+  }));
+
+  return res.status(200).json({ transactions: safeTransactions });
+});
+
+router.get('/insights/requests', requirePartnerAuthentication, async (req, res) => {
+  const { partnerId } = (req as any).user;
+  const range = (req.query.range as string) ?? '30d'
+  const interval = getRangeStart(range)
+
+  const data = await prisma.$queryRaw<
     {
-      subType: "partner",
-      isAdmin: false,
-      partnerId: member.partnerId,
-      memberId: member.id,
-      role: member.role as any,
-    },
-    "15m"
-  );
+      day: string
+      success: number
+      failed: number
+      rate_limited: number
+    }[]
+  >`
+SELECT
+  to_char(timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+  COUNT(*) FILTER (WHERE "statusCode" BETWEEN 200 AND 299)::int AS success,
+  COUNT(*) FILTER (
+    WHERE "statusCode" >= 400
+      AND "statusCode" != 429
+  )::int AS failed,
+  COUNT(*) FILTER (WHERE "statusCode" = 429)::int AS rate_limited
+FROM "ApiRequestLog"
+WHERE "apiPartnerId" = ${partnerId}
+  AND timestamp >= NOW() - INTERVAL ${Prisma.raw(`'${interval}'`)}
+GROUP BY day
+ORDER BY day ASC;
 
-  // Option A: return JSON
+`
+
+
+  res.json(data)
+}
+);
+
+router.delete('/remove-user', requirePartnerAuthentication, async (req, res) => {
+  const { role } = (req as any).user;
+  if (!checkRole(role, [PartnerUserRole.OWNER])) {
+    return res.status(401).json({ code: 'USER_DENIED' });
+  }
+  const { userId } = req.body;
+  const removeUser = await prisma.apiPartnerUser.delete({
+    where: { id: userId }
+  });
+  if (!removeUser) return res.status(500).json({code: 'REMOVE_USER_FAILED'});
+  return res.status(200).json({success: true});
+})
+
+router.post('/add-user-to-partner', requirePartnerAuthentication, async (req, res) => {
+  const { accountId, role } = req.body;
+
+
+  const { userId: reqUserId, partnerId: reqPartnerId, role: reqUserRole } = (req as any).user;
+  if (!checkRole(reqUserRole, [PartnerUserRole.OWNER, PartnerUserRole.ADMIN])) {
+    return res.status(401).json({ code: 'USER_DENIED' });
+  }
+  // Check if partner belongs to org already:
+  const partner = await prisma.apiPartner.findUnique({ where: { id: reqPartnerId } });
+  const checkAvailability = await prisma.apiPartnerUser.findFirst({
+    where: {
+      accountId,
+    }
+  });
+  if (checkAvailability) {
+    return res.status(401).json({ code: 'USER_ALREADY_EXISTS' });
+  } else {
+    const user = await prisma.apiPartnerUser.create({
+      data: {
+        partnerId: reqPartnerId,
+        accountId,
+        role,
+        status: PartnerUserStatus.INVITED,
+      }
+    });
+    if (!user) {
+      return res.status(500).json({ code: 'Error adding user to org' });
+    }
+    // send email to invite user to org (TODO)
+    /*
+            const subject = `Welcome to ${partner!.name}'s Faucet Team!`;
+            const html = `
+        <div style="font-family: system-ui,-apple-system,Segoe UI,Roboto,sans-serif;">
+          <h2>Hello ${email}</h2>
+          <p>
+          You have been invited to ${partner!.name}'s Faucet API Team. You can use the following link to sign in:
+        
+          </p>
+    
+          <h3>EVM Accounts That Received Drips within the past 24 hours:</h3>
+        </div>
+      `;
+    
+            await sendEmail(email, subject, html);
+            */
+    return res.status(200).json({ ok: true });
+  }
+}
+);
+
+router.post('/pause-user', requirePartnerAuthentication, async (req, res) => {
+  const { role, partnerId } = (req as any).user;
+  const { userId } = req.body;
+  if (!checkRole(role, [PartnerUserRole.ADMIN, PartnerUserRole.OWNER])) {
+    return res.status(401).json({ code: "CANNOT_FETCH_USERS" });
+  }
+  const pause_user = await prisma.apiPartnerUser.update({
+    where: { id: userId },
+    data: { status: PartnerUserStatus.PAUSED }
+  });
+  if (!pause_user) { return res.status(401).json({ code: 'PAUSE_FAILED ' }) }
+
   return res.status(200).json({
-    partnerId: member.partnerId,
-    memberId: member.id,
-    role: member.role,
-    portalToken,
-    expiresIn: 15 * 60,
+    paused: true,
   });
-
-  // Option B: set httpOnly cookie (commented)
-  // res
-  //   .cookie("portalSession", portalToken, {
-  //     httpOnly: true,
-  //     secure: true,
-  //     sameSite: "strict",
-  //     maxAge: 15 * 60 * 1000,
-  //   })
-  //   .json({ partnerId: member.partnerId, memberId: member.id, role: member.role });
 });
 
-
-// Partner Routes will utilize a 1 min JWT for revealing keys + regeneration. We use sign in above to sign a partner into the app, and use JWTs only to protect powerful routes.
-router.post("/auth/nonce", async (req, res) => {
-  const { accountId, network, chainId } = req.body ?? {};
-  if (!accountId) return res.status(400).json({ error: "Missing wallet" });
-
-  const { evm, hedera, type } = normalizeAccountId(accountId);
-  if (!evm && !hedera || !type) return res.status(400).json({ error: "Invalid wallet format" });
-
-  const nonce = `stepup:${Date.now()}:${crypto.randomBytes(16).toString("hex")}`;
-  const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
-
-  await prisma.walletLoginNonce.create({
-    data: {
-      type,
-      accountId,
-      network: network ?? "MAINNET",
-      chainId: type === "EVM" ? chainId ?? 1 : null,
-      nonce,
-      expiresAt,
-    },
+router.post('/resume-user', requirePartnerAuthentication, async (req, res) => {
+  const { role, partnerId } = (req as any).user;
+  const { userId } = req.body;
+  if (!checkRole(role, [PartnerUserRole.ADMIN, PartnerUserRole.OWNER])) {
+    return res.status(401).json({ code: "CANNOT_FETCH_USERS" });
+  }
+  const resume_user = await prisma.apiPartnerUser.update({
+    where: { id: userId },
+    data: { status: PartnerUserStatus.ACTIVE }
   });
-  res.status(200).json({ nonce, expiresAt });
-  return;
+  if (!resume_user) { return res.status(401).json({ code: 'RESUME_FAILED ' }) }
+
+  return res.status(200).json({
+    resume: true,
+  });
 });
 
+router.get("/users", requirePartnerAuthentication, async (req, res) => {
+  const { role, partnerId } = (req as any).user;
 
-// Verify signature → issue a 1 minute secure token for a specific sensitive route
-router.post("/auth/verify", async (req, res) => {
-  const { accountId, network, chainId, signature, nonce, action, keyId } = req.body ?? {};
-  if (!accountId || !signature || !nonce || !action || !keyId) {
-    return res.status(400).json({ error: "Missing fields" });
+  if (!checkRole(role, [PartnerUserRole.ADMIN, PartnerUserRole.OWNER])) {
+    return res.status(401).json({ code: "CANNOT_FETCH_USERS" });
   }
 
-  const { evm, hedera, type } = normalizeAccountId(accountId);
-  if (!evm && !hedera || !type) return res.status(400).json({ error: "Invalid wallet format" });
-
-  // 1) Find fresh nonce
-  const rec = await prisma.walletLoginNonce.findFirst({
-    where: {
-      type,
-      accountId,
-      network: network ?? "MAINNET",
-      chainId: type === "EVM" ? chainId ?? 1 : null,
-      nonce,
-      consumedAt: null,
-      expiresAt: { gt: new Date() },
-    },
-    orderBy: { expiresAt: "desc" },
+  const partner = await prisma.apiPartner.findUnique({
+    where: { id: partnerId },
+    select: { users: true },
   });
-  if (!rec) return res.status(401).json({ error: "Invalid or expired nonce" });
 
-  // 2) Verify signature (EVM shown; add Hedera path if needed)
-  if (type === "EVM") {
-    const recovered = verifyMessage(rec.nonce, signature);
-    if (getAddress(recovered) !== getAddress(accountId)) {
-      return res.status(401).json({ error: "Signature mismatch" });
-    }
-  }
-  await prisma.walletLoginNonce.update({ where: { id: rec.id }, data: { consumedAt: new Date() } });
-
-  // 3) Map wallet → partner (must be a valid login identity)
-  const member = await prisma.partnerAccount.findFirst({
-    where: {
-      type,
-      accountId: { equals: accountId, mode: "insensitive" },
-      network: rec.network,
-      chainId: rec.chainId ?? undefined,
-      isLoginIdentity: true,
-    },
-    select: { id: true, partnerId: true, role: true },
+  return res.status(200).json({
+    users: partner?.users ?? [],
   });
-  if (!member) return res.status(403).json({ error: "Wallet not authorized for this partner" });
+}
+);
 
-  // 4) Validate the requested resource belongs to the partner
-  const keyRow = await prisma.apiKey.findFirst({
-    where: { id: keyId, apiPartnerId: member.partnerId },
-    select: { id: true, revoked: true },
-  });
-  if (!keyRow) return res.status(404).json({ error: "Key not found" });
-  if (keyRow.revoked) return res.status(400).json({ error: "Key revoked" });
-
-  // 5) Derive binding for method/path/resourceId from action
-  //    These MUST match your gated route definitions exactly.
-  let method: "GET" | "POST";
-  let path: string;
-  if (action === "reveal") {
-    method = "GET";
-    path = "/api/partner/keys/:id/reveal";
-  } else if (action === "regenerate") {
-    method = "POST";
-    path = "/api/partner/keys/:id/regenerate";
-  } else {
-    return res.status(400).json({ error: "Invalid action" });
-  }
-
-  // 6) Single-use JTI and optional IP/UA binding
-  const jti = crypto.randomBytes(16).toString("hex");
-  const ipHash = undefined;
-  const uaHash = undefined;
-
-  // 7) Mint 20s secure token (no scopes)
-  const stepUpAt = Date.now();
-  const accessToken = await signSecureToken(
-    {
-      subType: "partner",
-      partnerId: member.partnerId,
-      memberId: member.id,
-      role: member.role as any,
-      stepUpAt,
-      resourceId: keyId,
-      method,
-      path,
-      ipHash,
-      uaHash,
-      jti,
-      isAdmin: false,
-      scope: action
-    },
-    60 // seconds
-  );
-
-  // 8) Register JTI as single-use with tiny TTL buffer
-  await registerSecureJti(jti, { ttlMs: 25_000, partnerId: member.partnerId, memberId: member.id });
-
-  return res.status(200).json({ accessToken, partnerId: member.partnerId, expiresIn: 60, action, keyId });
-});
-
-
-// GET API Key (Must pass partnerAuth middleware):
 
 // List keys (no plaintext). You can require auth here (recommended).
-router.get("/keys", requireSessionAuth, async (req, res) => {
-  const { partnerId } = (req as any).auth;
-  const keys = await prisma.apiKey.findMany({
-    where: { partnerId },
+router.get("/key", requirePartnerAuthentication, async (req, res) => {
+  const { partnerId } = (req as any).user;
+  const k = await prisma.apiKey.findFirst({
+    where: { apiPartnerId: partnerId, revoked: false },
     orderBy: { createdAt: "desc" },
     include: { scopes: true },
   });
+  if (!k) { return res.status(404).json({ code: 'KEY_NOT_FOUND' }) }
   res.json({
-    keys: keys.map(k => ({
+    key: {
       id: k.id,
       prefix: k.prefix,
       env: k.env,
@@ -366,69 +576,16 @@ router.get("/keys", requireSessionAuth, async (req, res) => {
       createdAt: k.createdAt,
       lastUsedAt: k.lastUsedAt,
       redacted: `pk_${k.env.toLowerCase()}_${k.type.toLowerCase()}_${k.prefix}_•••••••••`,
-    })),
-  });
-});
-
-router.get("/info", requireSessionAuth, async (req, res) => {
-  const { partnerId } = (req as any).auth;
-  const keys = await prisma.apiKey.findMany({
-    where: {
-      partnerId,
-      revoked: false
-    },
-    orderBy: { createdAt: "desc" },
-    include: { scopes: true },
-  });
-  const partnerInfo = await prisma.partner.findFirst({
-    where: { id: partnerId }
-  });
-  const partnerAccounts = await prisma.partnerAccount.findMany({
-    where: { partnerId },
-    orderBy: { createdAt: "desc" }, // optional
-  });
-
-  res.json({
-    info: {
-      id: partnerId,
-      name: partnerInfo?.name,
-      contact: partnerInfo?.contact,
-      createdAt: partnerInfo?.createdAt,
-      updatedAt: partnerInfo?.updatedAt,
-      multiDrip: partnerInfo?.multiDrip,
-      tier: partnerInfo?.tier,
-      requestLimitOverride: partnerInfo?.requestLimitOverride,
-      accounts: partnerAccounts.map(a => ({
-        id: a.id,
-        partnerId: a.partnerId,
-        type: a.type,
-        accountId: a.accountId,
-        network: a.network,
-        chainId: a.chainId,
-        createdAt: a.createdAt,
-        isLoginIdentity: a.isLoginIdentity,
-        role: a.role,
-      })),
-      keys: keys.map(k => ({
-        id: k.id,
-        prefix: k.prefix,
-        env: k.env,
-        type: k.type,
-        scopes: k.scopes.map(s => s.scope),
-        expiresAt: k.expiresAt,
-        createdAt: k.createdAt,
-        lastUsedAt: k.lastUsedAt,
-        redacted: `pk_${k.env.toLowerCase()}_${k.type.toLowerCase()}_${k.prefix}_•••••••••`,
-      })),
-      requestLogs: []
     }
-  });
+  }
+  )
 });
+
 
 // Secure reveal — requires fresh step-up (<= 5 min old)
 router.get("/keys/:id/reveal",
-  requireSecure('reveal'),
-  requireRecentStepUp(5),
+  requirePartnerAuthentication,
+  requireSecure(),
   async (req, res) => {
     const { partnerId } = (req as any).auth;
     const key = await prisma.apiKey.findUnique({ where: { id: req.params.id } });
@@ -442,25 +599,26 @@ router.get("/keys/:id/reveal",
 );
 
 // Regenerate — revoke current + mint new; requires fresh step-up
-router.post("/keys/:id/regenerate",
-  requireSecure('regenerate'),
-  requireRecentStepUp(5),
+router.get("/keys/:id/regenerate",
+  requirePartnerAuthentication,
+  requireSecure(),
   async (req, res) => {
-    const { partnerId } = (req as any).auth;
+    const { partnerId, role } = (req as any).user;
+    if (!checkRole(role, [PartnerUserRole.ADMIN, PartnerUserRole.OWNER])) { return res.status(401).json({ code: 'UNAUTHORIZED' }) }
     const cur = await prisma.apiKey.findUnique({ where: { id: req.params.id }, include: { scopes: true } });
-    if (!cur || cur.partnerId !== partnerId) return res.status(404).json({ error: "Not found" });
+    if (!cur || cur.apiPartnerId !== partnerId) return res.status(404).json({ error: "Not found" });
 
     await prisma.apiKey.update({ where: { id: cur.id }, data: { revoked: true } });
 
     const newKey = await issueApiKey(prisma, kms, {
-      partnerId,
+      apiPartnerId: partnerId,
       env: cur.env as any,
       type: cur.type as any,
       scopes: ["faucet:drip", "passport:score", "faucet:transactions"],
       expiresAt: cur.expiresAt ?? null,
     });
 
-    res.status(201).json({ key: newKey }); // includes plaintext once
+    res.status(201).json({ key: newKey.plaintext }); // includes plaintext once
   }
 );
 

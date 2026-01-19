@@ -12,7 +12,7 @@ const transporter = nodemailer.createTransport({
 // 2. Function to send mail
 export async function sendEmail(to: string[] | string, subject: string, html: string) {
   const info = await transporter.sendMail({
-    from: `"Hashport Faucet" <${process.env.EMAIL_USER}>`,
+    from: `"Hashport Faucet API" <${process.env.EMAIL_USER}>`,
     to: Array.isArray(to) ? to.join(", ") : to,
     subject,
     html,

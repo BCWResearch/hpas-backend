@@ -211,7 +211,7 @@ export async function revealApiKey(
     where: { id: apiKeyId },
     select: {
       id: true,
-      partnerId: true,
+      apiPartnerId: true,
       env: true,
       type: true,
       prefix: true,
@@ -229,7 +229,7 @@ export async function revealApiKey(
 
   const dek = await kms.unwrap(Buffer.from(rec.wrappedDek as Buffer));
   const aad = Buffer.from(
-    `${aadContext?.partnerId ?? rec.partnerId}|${aadContext?.env ?? rec.env}|${aadContext?.type ?? rec.type}|${aadContext?.prefix ?? rec.prefix}`,
+    `${aadContext?.partnerId ?? rec.apiPartnerId}|${aadContext?.env ?? rec.env}|${aadContext?.type ?? rec.type}|${aadContext?.prefix ?? rec.prefix}`,
     "utf8"
   );
 
@@ -271,7 +271,7 @@ export async function verifyBearerApiKey(
 
   const row = await prisma.apiKey.findUnique({
     where: { prefix: parsed.prefix },
-    select: { id: true, partnerId: true, keyHash: true, env: true, type: true, revoked: true, expiresAt: true },
+    select: { id: true, apiPartnerId: true, keyHash: true, env: true, type: true, revoked: true, expiresAt: true },
   });
   if (!row || row.revoked) return { ok: false, error: "REVOKED_OR_NOT_FOUND" };
   if (row.expiresAt && row.expiresAt < new Date()) return { ok: false, error: "EXPIRED" };
@@ -279,5 +279,5 @@ export async function verifyBearerApiKey(
   const good = await argon2.verify(row.keyHash, bearer);
   if (!good) return { ok: false, error: "BAD_SIGNATURE" };
 
-  return { ok: true, apiKey: { id: row.id, partnerId: row.partnerId, env: row.env as KeyEnv, type: row.type as KeyType } };
+  return { ok: true, apiKey: { id: row.id, partnerId: row.apiPartnerId, env: row.env as KeyEnv, type: row.type as KeyType } };
 }
