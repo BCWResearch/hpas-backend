@@ -19,6 +19,7 @@ export async function logApiRequest(partner_id: string, key_id: string, route: s
                 apiKeyId: key_id,
                 route,
                 statusCode,
+                response,
                 costUnits,
                 ipHash: hashIp(ip),
                 success,

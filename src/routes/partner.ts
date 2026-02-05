@@ -263,14 +263,13 @@ router.post("/add-email", requirePartnerAuthentication, async (req, res) => {
   return res.status(200).json({ success: true });
 });
 router.delete("/remove-email/:id", requirePartnerAuthentication, async (req, res) => {
-  const { partnerId, role } = (req as any).user;
+  const { role } = (req as any).user;
   const { id } = req.params;
 
   if (!checkRole(role, [PartnerUserRole.ADMIN, PartnerUserRole.OWNER])) {
     return res.status(401).json({ code: "UNAUTHORIZED" });
   }
-  const partner = await prisma.apiPartner.findFirst({ where: { id: partnerId }, select: { name: true } })
-  const created = await prisma.email.delete({
+  await prisma.email.delete({
     where: { id }
   });
 

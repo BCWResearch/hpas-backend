@@ -279,6 +279,7 @@ router.get('/transactions', requireApiKeyAuthentication, async (req, res) => {
             key_id,
             'transactions',
             500,
+            `TRANSACTION_INTERNAL_ERROR: ${e}`,
             0,
             req.ip!,
             false

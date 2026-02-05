@@ -7,6 +7,8 @@ import { requireAdminAuthentication } from "../middleware/adminAuth";
 import { AccountCreateTransaction, Hbar, PrivateKey } from "@hashgraph/sdk";
 import { requirePartnerAuthentication } from "../middleware/partnerAuth";
 import { generateVerificationToken, sendVerificationEmail } from "./partner";
+import { sendEmail } from "../utils/email/email";
+
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -14,6 +16,8 @@ const kmsAdapter =
     process.env.KEY_ENV === "gcp"
         ? makeGcpKmsAdapter()
         : makeLocalKmsAdapter();
+
+const isHedera = (s: string) => /^\d+\.\d+\.\d+$/.test((s ?? "").trim());
 
 
 
@@ -45,6 +49,20 @@ router.get('/emails/:id', requireAdminAuthentication, async (req, res) => {
     return res.status(200).json({
         emails: partner.emails,
     });
+});
+
+router.delete("/remove-email/:id", requireAdminAuthentication, async (req, res) => {
+    const { id } = req.params;
+    try {
+
+        await prisma.email.delete({
+            where: { id }
+        });
+
+        return res.status(200).json({ success: true });
+    } catch (e) {
+        return res.status(500).json({ code: 'REMOVE_EMAIL_ERROR' });
+    }
 });
 
 router.post('/add-email/:id', requireAdminAuthentication, async (req, res) => {
@@ -143,85 +161,194 @@ router.get('/request-logs/:id', requireAdminAuthentication, async (req, res) => 
     }
 });
 
-router.post('/add-new-partner', requireAdminAuthentication, async (req, res) => {
-    // checks to see if we can create a new partner
-    // need some sort of access key so only admin account can do this
-    const { name, threshold, dripAmountInUsd } = req.body;
-
-    const checkAvailability = await prisma.apiPartner.findUnique({
-        where: {
-            name
-        }
+router.delete("/remove-user/:id", requireAdminAuthentication, async (req, res) => {
+    const { id } = req.params;
+    const removeUser = await prisma.apiPartnerUser.delete({
+        where: { id }
     });
+    if (!removeUser) return res.status(500).json({ code: 'REMOVE_USER_FAILED' });
+    return res.status(200).json({ success: true });
+});
 
-    if (checkAvailability) {
-        return res.status(401).json({ code: 'USER_EXISTS' });
-    }
-    // create a new partner account:
+router.post("/add-new-partner", requireAdminAuthentication, async (req, res) => {
+    try {
+        const { name, initialUserId, point_of_contact_email } = req.body;
 
-    // create client
-    const client = getHederaClient('mainnet');
+        if (!name || !initialUserId || !point_of_contact_email) {
+            return res.status(400).json({ code: "MISSING_FIELDS" });
+        }
 
-    // create new pvt/public keypair:
-    const newPrivateKey = PrivateKey.generateECDSA();
-    const newPublicKey = newPrivateKey.publicKey;
+        if (!isHedera(initialUserId)) {
+            return res.status(400).json({ code: "INVALID_ACCOUNT_ID" });
+        }
 
+        const existingPartner = await prisma.apiPartner.findUnique({ where: { name } });
+        if (existingPartner) {
+            return res.status(409).json({ code: "PARTNER_EXISTS" });
+        }
 
-
-    const transaction = new AccountCreateTransaction()
-        .setECDSAKeyWithAlias(newPublicKey)
-        .setInitialBalance(new Hbar(0.25));
-
-    const txResponse = await transaction.execute(client);
-    const receipt = await txResponse.getReceipt(client);
-
-    if (receipt.status.toString() !== "SUCCESS") {
-        return res.status(500).json({
-            code: "ACCOUNT_CREATION_FAILED",
-            status: receipt.status.toString(),
+        const existingUser = await prisma.apiPartnerUser.findFirst({
+            where: { accountId: initialUserId },
         });
-    }
+        if (existingUser) {
+            return res.status(409).json({ code: "USER_ALREADY_EXISTS" });
+        }
 
-    const newAccountId = receipt.accountId;
+        // create treasury
+        const client = getHederaClient("mainnet");
+        const newPrivateKey = PrivateKey.generateECDSA();
+        const newPublicKey = newPrivateKey.publicKey;
 
+        const txResponse = await new AccountCreateTransaction()
+            .setECDSAKeyWithAlias(newPublicKey)
+            .setInitialBalance(new Hbar(0.25))
+            .execute(client);
 
-    //TODO: encrypt private key with kms, public + encrypted pvt key will go to db,
-    const encryptedPrivateKey = await kmsAdapter.wrap(
-        Buffer.from(newPrivateKey.toBytes())
-    );
+        const receipt = await txResponse.getReceipt(client);
 
-    if (newAccountId) {
+        if (receipt.status.toString() !== "SUCCESS") {
+            return res.status(500).json({ code: "ACCOUNT_CREATION_FAILED" });
+        }
 
-        // update or insert new api User
+        const encryptedPrivateKey = await kmsAdapter.wrap(
+            Buffer.from(newPrivateKey.toBytes())
+        );
 
-        // Public Key, partner name, partner email, threshold, role goes here.
         const partner = await prisma.apiPartner.create({
             data: {
                 name,
-                threshold,
-                encryptedPrivateKey,
-                dripAmountInUsd,
-                publicKey: newPublicKey.toStringDer(),
+                threshold: 0,
+                dripAmountInUsd: 0,
                 thresholdTriggered: false,
-                accountId: newAccountId.toString(),
-            }
+                encryptedPrivateKey,
+                publicKey: newPublicKey.toStringDer(),
+                accountId: receipt.accountId!.toString(),
+            },
         });
 
-        if (partner) {
+        try {
+            await prisma.apiPartnerUser.create({
+                data: {
+                    partnerId: partner.id,
+                    accountId: initialUserId,
+                    role: "OWNER",
+                    status: "INVITED",
+                },
+            });
 
-            console.log('Heres the partner id:', partner.id);
+            await prisma.email.create({
+                data: {
+                    email: point_of_contact_email,
+                    partnerId: partner.id,
+                    verified: false,
+                },
+            });
 
-            // Create a new API Key, and issue it here (TODO)
             await issueApiKey(prisma, kmsAdapter, {
                 apiPartnerId: partner.id,
                 env: "LIVE",
                 type: "FAUCET",
                 scopes: ["faucet:drip", "passport:score", "faucet:transactions"],
             });
-            return res.status(200).json({ code: 'OK' });
+
+            const subject = "Welcome to HDrip — Your Organization Has Been Activated";
+
+            const html = `
+            <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111;">
+            <h2 style="margin-bottom: 8px;">Welcome to HDrip</h2>
+
+            <p>
+                Your organization has been successfully onboarded to the <strong>HDrip API</strong>.
+                You now have access to your organization’s Partner Portal where you can configure
+                your faucet settings and manage access.
+            </p>
+
+            <hr style="margin: 24px 0;" />
+
+            <h3 style="margin-bottom: 8px;">Sign in to your Partner Portal</h3>
+
+            <p>
+                Please sign in using the Hedera account provided during onboarding.
+            </p>
+
+            <p style="margin: 12px 0;">
+                <strong>Sign-in link:</strong><br/>
+                <a href="http://localhost:5174/login" style="color:#6b5cff;">
+                http://localhost:5174/login
+                </a>
+            </p>
+
+            <p>
+                <strong>Your sign-in Hedera Account ID:</strong><br/>
+                <code style="background:#f4f4f4; padding:6px 8px; border-radius:6px;">
+                ${initialUserId}
+                </code>
+            </p>
+
+            <p>
+                Use this account with HashPack to authenticate.
+            </p>
+
+            <hr style="margin: 24px 0;" />
+
+            <h3 style="margin-bottom: 8px;">Getting Started</h3>
+
+            <p>After signing in, please complete the following setup steps:</p>
+
+            <ol>
+                <li>
+                <strong>Fund your faucet treasury wallet</strong><br/>
+                Your organization wallet must be funded before drips can occur.
+                </li>
+                <li>
+                <strong>Configure your drip amount</strong><br/>
+                Set how much HBAR is distributed per request.
+                </li>
+                <li>
+                <strong>Set your refill threshold</strong><br/>
+                This determines when your team receives low-balance notifications.
+                </li>
+                <li>
+                <strong>Add additional organization members</strong><br/>
+                You can invite teammates and assign roles directly from the portal.
+                </li>
+            </ol>
+
+            <hr style="margin: 24px 0;" />
+
+            <h3 style="margin-bottom: 8px;">Need help?</h3>
+
+            <p>
+                If you have any questions or need assistance with setup,
+                feel free to reply directly to this email or reach out to our team.
+            </p>
+
+            <p style="margin-top: 32px;">
+                — Hashport Team<br/>
+                <span style="color:#666;">HDrip API</span>
+            </p>
+            </div>
+            `;
+            await sendEmail(point_of_contact_email, subject, html);
+
+        } catch (err) {
+            console.error("Onboarding failed, cleaning up partner", err);
+
+            await prisma.apiPartner.delete({
+                where: { id: partner.id },
+            });
+
+            return res.status(500).json({ code: "PARTNER_SETUP_FAILED" });
         }
+
+        return res.status(200).json({ ok: true });
+
+    } catch (e) {
+        console.error(e);
+        return res.status(500).json({ code: "INTERNAL_ERROR" });
     }
 });
+
 
 // R
 
