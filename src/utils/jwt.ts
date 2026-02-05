@@ -25,6 +25,7 @@ type BaseClaims = {
 // long-lived (15m) session token for admins/partners
 export type SessionClaims = BaseClaims & {
     tokenType: "session";
+    jti: string;
 };
 
 // very short (20s) secure token for reveal/regenerate

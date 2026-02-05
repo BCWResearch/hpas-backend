@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { googleClient } from "../utils/google";
-import { signSecureToken, signSessionToken } from "../utils/jwt";
+import { signSecureToken, signSessionToken, verifySessionToken } from "../utils/jwt";
 import { PartnerUserStatus, PrismaClient } from "@prisma/client";
 import { requireAdminAuthentication } from "../middleware/adminAuth";
 import { requirePartnerAuthentication } from "../middleware/partnerAuth";
@@ -17,7 +17,25 @@ const isHedera = (s: string) => /^\d+\.\d+\.\d+$/.test((s ?? "").trim());
 function genNonce(len = 32) {
     return crypto.randomBytes(len).toString("base64url");
 }
+router.get("/admin/logout", requireAdminAuthentication, async (req, res) => {
+    const token = req.cookies?.session;
+    if (!token) {
+        return res.status(401).json({ error: "Missing session" });
+    }
 
+    const payload = await verifySessionToken(token);
+    await prisma.apiAdminSession.update({
+        where: { jti: payload.jti },
+        data: { revokedAt: new Date() },
+    });
+    res.clearCookie("session", {
+        httpOnly: true,
+        secure: true,
+        sameSite: "lax",
+        path: "/",
+    });
+    return res.status(200).json({ ok: true });
+})
 router.get("/logout", requirePartnerAuthentication, async (req, res) => {
     const { userId, partnerId } = (req as any).user;
 
@@ -28,12 +46,22 @@ router.get("/logout", requirePartnerAuthentication, async (req, res) => {
         }
     });
     if (!user) { return res.status(404).json({ code: 'USER_NOT_FOUND' }) }
-    const partner = await prisma.apiPartner.findFirst({
+    await prisma.apiPartner.findFirst({
         where: {
             id: partnerId
         },
     });
+    const token = req.cookies?.session;
+    if (!token) {
+        return res.status(401).json({ error: "Missing session" });
+    }
 
+    const payload = await verifySessionToken(token);
+
+    await prisma.apiSession.update({
+        where: { jti: payload.jti },
+        data: { revokedAt: new Date() },
+    });
     res.clearCookie("session", {
         httpOnly: true,
         secure: true,
@@ -113,7 +141,9 @@ router.post("/signin/verify", async (req, res) => {
         if (!user) { return res.status(404).json({ code: 'USER_NOT_FOUND' }) }
 
         if (user.status === PartnerUserStatus.INVITED) { await prisma.apiPartnerUser.update({ where: { id: user.id }, data: { status: PartnerUserStatus.ACTIVE } }); }
+        const jti = crypto.randomUUID();
         const session = await signSessionToken({
+            jti,
             subType: "partner",
             memberId: user.id,
             partnerId: user.partnerId,
@@ -121,6 +151,16 @@ router.post("/signin/verify", async (req, res) => {
             isAdmin: false,
         }, "15m");
 
+        const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+        const session_store = await prisma.apiSession.create({
+            data: {
+                jti,
+                userId: user.id,
+                partnerId: user.partnerId,
+                expiresAt
+            }
+        });
+        if (!session_store) { return res.status(400).json({ code: 'SESSION_FAILED' }) }
         res.cookie("session", session, {
             httpOnly: true,
             secure: true,
@@ -160,7 +200,7 @@ router.post("/action/nonce", async (req, res) => {
     if (!loginIdentity || loginIdentity.partnerId != apiPartnerId) return res.status(401).json({ error: "Invalid Login Identity" });
     if (!keyPartnerCheck || keyPartnerCheck.id != keyId) return res.status(401).json({ error: 'KEY_UNAUTHORIZED' });
 
-    const nonce = `action:${apiPartnerId}:${keyId}:${Date.now()}:${genNonce}`;
+    const nonce = `action:${apiPartnerId}:${keyId}:${Date.now()}:${genNonce(32)}`;
     const expiresAt = new Date(Date.now() + 1 * 60 * 1000);
 
     await prisma.apiUserActionNonce.create({
@@ -220,8 +260,6 @@ router.post("/action/verify", async (req, res) => {
         }
         // 6) Single-use JTI and optional IP/UA binding
         const jti = crypto.randomBytes(16).toString("hex");
-        const ipHash = undefined;
-        const uaHash = undefined;
 
         // 7) Mint 20s secure token (no scopes)
         const stepUpAt = Date.now();
@@ -233,8 +271,6 @@ router.post("/action/verify", async (req, res) => {
                 role: user.role as any,
                 stepUpAt,
                 resourceId: keyId,
-                ipHash,
-                uaHash,
                 jti,
                 isAdmin: false,
             },
@@ -297,13 +333,24 @@ router.post("/google", async (req, res) => {
     let session: string;
 
     if (admin) {
+        const jti = crypto.randomUUID();
         session = await signSessionToken({
+            jti,
             subType: "admin",
             email: email,
             adminId: admin.id,
             role: 'ADMIN',
             isAdmin: true,
         }, "15m");
+        const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+        const session_store = await prisma.apiAdminSession.create({
+            data: {
+                jti,
+                adminId: admin.id,
+                expiresAt,
+            }
+        });
+        if (!session_store) { return res.status(401).json({ code: 'SESSION_FAILED' }) }
     } else {
         return res.status(401).json({ code: 'ADMIN_NOT_FOUND' });
     }
@@ -351,7 +398,7 @@ router.get("/partner", requirePartnerAuthentication, async (req, res) => {
 });
 
 router.get("/admin", requireAdminAuthentication, async (req, res) => {
-    const { adminId } = (req as any).admin.adminId;
+    const { adminId } = (req as any).admin;
     console.log(req.body);
 
     const admin = await prisma.apiPartnerAdmin.findFirst({

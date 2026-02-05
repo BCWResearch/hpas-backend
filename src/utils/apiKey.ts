@@ -162,17 +162,18 @@ export async function issueApiKey(
   // 4) Persist ApiKey
   const key = await prisma.apiKey.create({
     data: {
-        apiPartnerId,
-        keyHash,
-        prefix,
-        env,
-        type,
-        expiresAt: input.expiresAt ?? null,
-        kmsKeyId: kms.kmsKeyId,
-        secretCiphertext: ct,
-        secretIv: iv,
-        secretTag: tag,
-        wrappedDek,
+      apiPartnerId,
+      keyHash,
+      prefix,
+      env,
+      type,
+      expiresAt: input.expiresAt ?? null,
+      kmsKeyId: kms.kmsKeyId,
+      secretCiphertext: ct,
+      secretIv: iv,
+      secretTag: tag,
+      wrappedDek,
+      revoked: false
     },
     select: { id: true, env: true, type: true, expiresAt: true, prefix: true },
   });

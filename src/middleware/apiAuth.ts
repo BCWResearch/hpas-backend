@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from "express";
 import { parsePlaintextKey } from "../utils/apiKey";
 import { PrismaClient } from "@prisma/client";
 import argon2 from "argon2";
+import { logApiRequest } from "../utils/logger";
 
 const prisma = new PrismaClient();
 
@@ -13,7 +14,8 @@ export async function requireApiKeyAuthentication(
     console.log("CALLED");
     const h = req.header("authorization") ?? "";
     const apiKey = req.get("X-API-KEY");
-    if (!apiKey) return res.status(401).json({ error: "Missing API key" });
+
+    if (!apiKey) return res.status(404).json({ code: "API_KEY_NOT_FOUND" });
 
     // 1) Resolve required scope
     // 2) Parse + lookup by prefix
@@ -22,7 +24,7 @@ export async function requireApiKeyAuthentication(
     try {
         parsed = parsePlaintextKey(apiKey);
     } catch {
-        return res.status(401).json({ error: "Invalid API key format" });
+        return res.status(401).json({ code: "INVALID_API_KEY" });
     }
     //console.log(parsed);
     const key = await prisma.apiKey.findUnique({
@@ -32,16 +34,19 @@ export async function requireApiKeyAuthentication(
             scopes: true,
         },
     });
-    console.log("HI:", key?.keyHash);
-    if (!key || key.revoked) return res.status(401).json({ error: "Key revoked or not found" });
+    //console.log("HI:", key?.keyHash);
+    if (!key || key.revoked) return res.status(401).json({ code: "KEY_REVOKED" });
     if (key.expiresAt && key.expiresAt < new Date())
-        return res.status(401).json({ error: "Key expired" });
+        return res.status(401).json({ code: "KEY_EXPIRED" });
 
-    if (!key.apiPartner.active) return res.status(401).json({ code: 'SERVICE_PAUSED' });
+    if (!key.apiPartner.active || key.apiPartner.isPausedByAdmin) {
+        await logApiRequest(key.apiPartner.id, key.id, 'drip', 403, 'SERVICE_PAUSED', 0, req.ip!, false);
+        return res.status(403).json({ code: 'SERVICE_PAUSED' });
+    }
     // 3) Verify signature (argon2.verify)
     const good = await argon2.verify(key.keyHash, apiKey);
-    console.log("GOOD", good);
-    if (!good) return res.status(401).json({ error: "Invalid API key" });
+    //console.log("GOOD", good);
+    if (!good) return res.status(401).json({ error: "INVALID_API_KEY" });
     (req as any).partner = {
         sender_account_id: key.apiPartner.accountId,
         partner_id: key.apiPartner.id,

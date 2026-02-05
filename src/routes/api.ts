@@ -8,6 +8,7 @@ import { makeGcpKmsAdapter, makeLocalKmsAdapter } from "../utils/kms/local";
 import { getDripAndFees } from "../utils/balance/drip/getDripAndFees";
 import { requireApiKeyAuthentication } from "../middleware/apiAuth";
 import { sendEmail } from "../utils/email/email";
+import { logApiRequest } from "../utils/logger";
 const prisma = new PrismaClient();
 dotenv.config();
 const router = express.Router();
@@ -18,29 +19,13 @@ const kmsAdapter =
         ? makeGcpKmsAdapter()
         : makeLocalKmsAdapter();
 
-async function logApiRequest(partner_id: string, key_id: string, route: string, statusCode: number, costUnits: number, ip: string, success: boolean) {
-    try {
-        await prisma.apiRequestLog.create({
-            data: {
-                apiPartnerId: partner_id,
-                apiKeyId: key_id,
-                route,
-                statusCode,
-                costUnits,
-                ipHash: hashIp(ip),
-                success,
-            },
-        });
-        // lightweight "last used" update (don’t await)
-        prisma.apiKey.update({ where: { id: key_id }, data: { lastUsedAt: new Date() } }).catch(() => { });
-    } catch (e) {
-        // swallow logging errors
-        console.warn("request log write failed", e);
-    }
-}
+const isHedera = (s: string) => /^\d+\.\d+\.\d+$/.test((s ?? "").trim());
 
 
-export async function getPartnerKeyFromKMS(sender_account_id: string): Promise<{ sender_account_pkey: PrivateKey; sender_account_pbkey: PublicKey } | { sender_account_pkey: string; sender_account_pbkey: string }> {
+
+
+
+export async function getPartnerKeyFromKMS(sender_account_id: string): Promise<{ sender_account_pkey: PrivateKey; sender_account_pbkey: PublicKey }> {
 
     const encrypted_pvt_key = await prisma.apiPartner.findFirst({
         where: {
@@ -49,7 +34,7 @@ export async function getPartnerKeyFromKMS(sender_account_id: string): Promise<{
         select: { encryptedPrivateKey: true, publicKey: true }
     });
     // decrypt pvt key
-    if (!encrypted_pvt_key) { return { sender_account_pkey: 'fail', sender_account_pbkey: 'fail' } }
+    if (!encrypted_pvt_key) { throw new Error("PARTNER_KEY_NOT_FOUND"); }
     const sender_account_pvt_key_raw = await kmsAdapter.unwrap(Buffer.from(encrypted_pvt_key.encryptedPrivateKey));
     return { sender_account_pkey: PrivateKey.fromBytes(sender_account_pvt_key_raw), sender_account_pbkey: PublicKey.fromStringECDSA(encrypted_pvt_key.publicKey) };
 }
@@ -81,14 +66,7 @@ async function sendLowBalanceEmail(
 }
 
 
-function hashIp(ip: string | undefined): string | undefined {
-    if (!ip) return undefined;
-    try {
-        return require("crypto").createHash("sha256").update(ip).digest("hex");
-    } catch {
-        return undefined;
-    }
-}
+
 // Checks DB to ensure that a partner can be created + Creates a new partner account + adds them to the DB
 
 // Admin control routes
@@ -108,17 +86,45 @@ router.post('/drip', requireApiKeyAuthentication, async (req, res) => {
         const { recipient_account_id } = req.body;
         // verification that recipient_account_id is correct, we will obtain the sender_account_id from the middleware, and set the drip amount here
         if (!recipient_account_id) {
-            await logApiRequest(partner_id, key_id, 'drip', 400, 0, req.ip!, false);
+            await logApiRequest(partner_id, key_id, 'drip', 400, 'RECIPIENT_ACCOUNT_MISSING', 0, req.ip!, false);
             return res.status(400).json({ code: 'RECIPIENT_ACCOUNT_REQUIRED' });
         }
+        if (!isHedera(recipient_account_id)) {
+            await logApiRequest(partner_id, key_id, 'drip', 400, 'INVALID_RECIPIENT_ACCOUNT_ID', 0, req.ip!, false);
+            return res.status(400).json({ code: 'INVALID_RECIPIENT_ACCOUNT_ID' });
+        }
+
+
+        // Get email list + threshold info
+        const email_list = await prisma.email.findMany({
+            where: {
+                partnerId: partner_id,
+                verified: true
+            },
+            select: {
+                email: true,
+            }
+        });
+        const threshold_info = await prisma.apiPartner.findUnique({
+            where: { id: partner_id },
+            select: { threshold: true, thresholdTriggered: true }
+        });
+
+        if (!threshold_info) {
+            await logApiRequest(partner_id, key_id, 'drip', 404, 'THRESHOLD_NOT_FOUND', 0, req.ip!, false);
+            return res.status(404).json({ code: 'THRESHOLD_NOT_FOUND' });
+        }
+
+        if (email_list.length === 0) {
+            await logApiRequest(partner_id, key_id, 'drip', 404, 'EMAIL_LIST_NOT_FOUND', 0, req.ip!, false);
+            return res.status(404).json({ code: 'EMAIL_LIST_NOT_FOUND' })
+        }
+        const emails = email_list.map(e => e.email);
 
         // Get the pvt key from the kms to use here.
         const { sender_account_pkey } = await getPartnerKeyFromKMS(sender_account_id);
         // get the drip_amount_in_hbar + fee_amount_in_hbar
         const { dripTinybar, feeTinybar, totalTinybar } = await getDripAndFees(drip_amount_in_usd);
-        console.log('DRIP AMNT HBAR:', dripTinybar);
-        console.log('FEE AMNT HBAR:', feeTinybar);
-        console.log('TOTAL AMNT HBAR:', totalTinybar);
         // create a client using the sender_account_id and the sender_account_id from the kms
         const client = Client.forMainnet();
         client.setOperator(
@@ -126,11 +132,6 @@ router.post('/drip', requireApiKeyAuthentication, async (req, res) => {
             sender_account_pkey
         );
 
-        console.log("PAYER:", sender_account_id);
-        console.log({
-            sender_account_id,
-            operatorIdUsedByClient: client._operator?.accountId?.toString()
-        });
 
         if (totalTinybar !== dripTinybar + feeTinybar) {
             throw new Error("Invariant failed: drip + fee != total");
@@ -140,10 +141,11 @@ router.post('/drip', requireApiKeyAuthentication, async (req, res) => {
             .setAccountId(sender_account_id)
             .execute(client);
 
-        console.log("PAYER BAL:", payerBal.hbars.toString());
-        console.log("PAYER tinybar:", payerBal.hbars.toTinybars().toString());
-
-
+        const preBalanceTinybar = payerBal.hbars.toTinybars();
+        if (preBalanceTinybar.lessThan(totalTinybar)) {
+            await logApiRequest(partner_id, key_id, 'drip', 402, 'INSUFFICIENT_FUNDS', 0, req.ip!, false);
+            return res.status(402).json({ code: 'INSUFFICIENT_FUNDS' });
+        }
         // Batch transaction 
         const transaction = new TransferTransaction()
             .setMaxTransactionFee(new Hbar(1))
@@ -179,52 +181,14 @@ router.post('/drip', requireApiKeyAuthentication, async (req, res) => {
                 status = PartnerDripStatus.FAILED;
         }
         // Check Balance of Sender Account, then compare to threshold. If threshold is reached, we can 
-        const query = new AccountBalanceQuery()
-            .setAccountId(sender_account_id);
-        const accountBalance = await query.execute(client);
 
-        // Alert everyone on the team that is a admin or owner rank!
-        const email_list = await prisma.email.findMany({
-            where: {
-                partnerId: partner_id,
-                verified: true
-            },
-            select: {
-                email: true,
-            }
-        });
-        const threshold_info = await prisma.apiPartner.findUnique({
-            where: { id: partner_id },
-            select: { threshold: true, thresholdTriggered: true }
-        });
+        const postBalanceTinybar = preBalanceTinybar.subtract(totalTinybar);
 
-        if (!threshold_info) {
-            return res.status(404).json({ code: 'THRESHOLD_NOT_FOUND' });
-        }
-
-        if (!email_list) {
-            return res.status(404).json({ code: 'EMAIL_LIST_NOT_FOUND' })
-        }
-        const emails = email_list.map(e => e.email);
-
-        const balanceTinybar = accountBalance.hbars.toTinybars();
         const thresholdTinybar = Hbar.fromString(threshold_info.threshold.toString(), HbarUnit.Hbar).toTinybars();
 
-        console.log('balanceTinybar:', balanceTinybar);
+        console.log('balanceTinybar:', postBalanceTinybar);
         console.log('thresholdTinybar:', thresholdTinybar);
         console.log('Triggered?:', threshold_info.thresholdTriggered);
-        if (balanceTinybar.lessThan(thresholdTinybar) && !threshold_info.thresholdTriggered) {
-            // send a low balance email to the partner's email
-            await sendLowBalanceEmail(emails, accountBalance.hbars, threshold_info.threshold);
-            await prisma.apiPartner.update({
-                where: {
-                    id: partner_id
-                },
-                data: {
-                    thresholdTriggered: true,
-                },
-            });
-        }
 
         // update the api transaction history table:
         await prisma.partnerTransactionHistory.create({
@@ -239,8 +203,29 @@ router.post('/drip', requireApiKeyAuthentication, async (req, res) => {
             },
         });
 
+        if (receipt.status !== Status.Success) {
+            await logApiRequest(partner_id, key_id, 'drip', 502, `DRIP_FAILED, ${receipt.toString()}`, 0, req.ip!, false);
+            return res.status(502).json({
+                code: 'DRIP_FAILED',
+                status: receipt.status.toString(),
+                transactionId: txId
+            });
+        }
         //TODO: We should also update the insight requests here
-        await logApiRequest(partner_id, key_id, 'drip', 200, 1, req.ip!, true);
+        try {
+            const postBalanceHbar = Hbar.fromTinybars(postBalanceTinybar);
+            if (postBalanceTinybar.lessThan(thresholdTinybar) && !threshold_info.thresholdTriggered) {
+                await sendLowBalanceEmail(emails, postBalanceHbar, threshold_info.threshold);
+                await prisma.apiPartner.update({
+                    where: { id: partner_id },
+                    data: { thresholdTriggered: true },
+                });
+            }
+        } catch (err) {
+            console.error("Low balance alert failed", err);
+        }
+
+        await logApiRequest(partner_id, key_id, 'drip', 200, 'OK', 1, req.ip!, true);
 
         return res.status(200).json({ code: 'DRIP_SUCCESSFUL', transactionId: txId });
     } catch (e) {
@@ -250,6 +235,7 @@ router.post('/drip', requireApiKeyAuthentication, async (req, res) => {
             key_id,
             'drip',
             500,
+            `DRIP_INTERNAL_ERROR: ${e}`,
             0,
             req.ip!,
             false
@@ -269,7 +255,7 @@ router.get('/transactions', requireApiKeyAuthentication, async (req, res) => {
         });
 
         if (!transactions) {
-            return res.status(404).json({ code: 'THRESHOLD_NOT_FOUND' });
+            return res.status(404).json({ code: 'TRANSACTIONS_NOT_FOUND' });
         }
 
         const safeTransactions = transactions.map(tx => ({
@@ -284,11 +270,10 @@ router.get('/transactions', requireApiKeyAuthentication, async (req, res) => {
         // update the api transaction history table:
 
         //TODO: We should also update the insight requests here
-        await logApiRequest(partner_id, key_id, 'transactions', 200, 0, req.ip!, true);
+        await logApiRequest(partner_id, key_id, 'transactions', 200, 'OK', 0, req.ip!, true);
 
         return res.status(200).json({ transactions: safeTransactions });
     } catch (e) {
-
         await logApiRequest(
             partner_id,
             key_id,

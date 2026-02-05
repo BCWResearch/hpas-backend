@@ -9,10 +9,10 @@ import { requireSecure } from "../middleware/secureGate";
 import { fetchPartnerBalanceInUsdAndHbarFromApi } from "../utils/balance/balanceUtil";
 import { checkRole } from "../utils/checkRole";
 import { getHederaClient } from "../utils/getHederaClient";
-import { AccountUpdateTransaction, Client, Hbar, HbarUnit, PrivateKey, TransactionId, TransactionReceiptQuery } from "@hashgraph/sdk";
+import { AccountBalanceQuery, AccountUpdateTransaction, Client, Hbar, HbarUnit, PrivateKey, TransactionId, TransactionReceiptQuery } from "@hashgraph/sdk";
 import { sendEmail } from "../utils/email/email";
 import { getPartnerKeyFromKMS } from "./api";
-import { lock } from "ethers";
+import { fetchUsdPerHbar } from "../utils/balance/drip/getDripAndFees";
 
 const kmsAdapter =
   process.env.KEY_ENV === "gcp"
@@ -64,12 +64,12 @@ function getRangeStart(range: string) {
   }
 }
 
-function generateVerificationToken() {
+export function generateVerificationToken() {
   return crypto.randomBytes(32).toString("hex");
 }
 
 
-async function sendVerificationEmail(email: string, token: string, name: string) {
+export async function sendVerificationEmail(email: string, token: string, name: string) {
   const verifyUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
   const html = `
       <p>You were added as an email identity for ${name}'s HDrip account.</p>
@@ -83,6 +83,29 @@ async function sendVerificationEmail(email: string, token: string, name: string)
     "Verify your email",
     html);
 }
+
+async function sendRefillEmail(
+  partnerEmails: string[],
+  hbars: string,
+  thresholdHbar: number
+) {
+
+  const subject = "Faucet Balance Refill Alert";
+
+  const html = `
+    <p>
+      Your organization's Faucet account balance has been refilled. 
+      Current balance: ${hbars} hbar
+      threshold: ${thresholdHbar} hbar
+    </p>
+    <p>
+      Note: If the current balance is below threshold, you may still receive low balance alerts.
+    </p>
+  `;
+
+  await sendEmail(partnerEmails, subject, html);
+}
+
 
 router.post("/rotate-account", requirePartnerAuthentication, async (req, res) => {
   const { partnerId, role } = (req as any).user;
@@ -117,7 +140,12 @@ router.post("/rotate-account", requirePartnerAuthentication, async (req, res) =>
     .setAccountId(partner.accountId)
     .setKey(newPublicKey);
 
-  const txResponse = await tx.execute(client);
+
+
+  const frozen = tx.freezeWith(client);
+
+  const signed = await (await frozen.sign(sender_account_pkey)).sign(newPrivateKey);
+  const txResponse = await signed.execute(client);
   const receipt = await txResponse.getReceipt(client);
 
   const status = receipt.status.toString();
@@ -135,13 +163,24 @@ router.post("/rotate-account", requirePartnerAuthentication, async (req, res) =>
     },
   });
 
+  await prisma.apiKey.updateMany({
+    where: {
+      apiPartnerId: partnerId,
+      env: "LIVE",
+    },
+    data: {
+      revoked: true,
+    },
+  });
   // Create a new API Key, and issue it here (TODO)
-  const apiKey = await issueApiKey(prisma, kmsAdapter, {
+  await issueApiKey(prisma, kmsAdapter, {
     apiPartnerId: updatedPartner.id,
     env: "LIVE",
     type: "FAUCET",
     scopes: ["faucet:drip", "passport:score", "faucet:transactions"],
   });
+
+
   return res.status(200).json({ code: 'OK' });
 });
 
@@ -268,6 +307,60 @@ router.get("/verify-email", async (req, res) => {
 });
 
 
+router.get('/analytics', requirePartnerAuthentication, async (req, res) => {
+  const { partnerId } = (req as any).user;
+  const now = new Date();
+  const startOfMonth = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    1,
+    0, 0, 0, 0
+  ));
+  const [allTime, thisMonth] = await Promise.all([
+    prisma.partnerTransactionHistory.aggregate({
+      where: {
+        partnerId,
+        status: "SUCCESS",
+      },
+      _count: { _all: true },
+      _sum: { amountTinybar: true },
+    }),
+
+    prisma.partnerTransactionHistory.aggregate({
+      where: {
+        partnerId,
+        status: "SUCCESS",
+        timestamp: {
+          gte: startOfMonth,
+        },
+      },
+      _count: { _all: true },
+      _sum: { amountTinybar: true },
+    }),
+  ]);
+
+  const TINYBAR_PER_HBAR = 100_000_000n;
+
+  const totalTinybar = allTime._sum.amountTinybar ?? 0n;
+  const totalHbar = Number(totalTinybar) / Number(TINYBAR_PER_HBAR);
+
+  const usdPerHbar = await fetchUsdPerHbar(); // cache this
+  const totalUsd = totalHbar * usdPerHbar;
+
+  const totalDrips = allTime._count._all;
+
+  const monthlyTinybar = thisMonth._sum.amountTinybar ?? 0n;
+  const monthHbar = Number(monthlyTinybar) / Number(TINYBAR_PER_HBAR);
+  const monthUSD = monthHbar * usdPerHbar;
+  const monthDrips = thisMonth._count._all
+  return res.status(200).json({
+    totalDrips,
+    totalUsdDripped: Number(totalUsd.toFixed(2)),
+    monthDrips,
+    monthUSDDripped: Number(monthUSD.toFixed(2))
+  });
+});
+
 router.post('/balance', requirePartnerAuthentication, async (req, res) => {
   const { accountId } = req.body;
   if (!accountId) { return res.status(404).json({ code: 'ACCOUNT_NOT_FOUND' }) }
@@ -302,12 +395,105 @@ router.get('/dashboard', requirePartnerAuthentication, async (req, res) => {
   });
 });
 
-
-router.post('/refill-account', async (req, res) => {
+/*
+router.get('/refill-account/:transactionId', requirePartnerAuthentication, async (req, res) => {
   // get the account id from BE transaction id 
+  const { partnerId } = (req as any).user;
+  const { transactionId } = req.params;
+      if (!partnerId) {
+      return res.status(400).json({ code: "MISSING_REQUIRED_FIELDS" });
+    }
+
+       try {
+      const partner = await prisma.apiPartner.findUnique({
+        where: { id: partnerId },
+        select: {
+          accountId: true,
+          threshold: true,
+          thresholdTriggered: true,
+        },
+      });
+
+      if (!partner) {
+        return res.status(404).json({ code: "PARTNER_NOT_FOUND" });
+      }
+
+      const client = Client.forMainnet();
+
+      const balance = await new AccountBalanceQuery()
+        .setAccountId(partner.accountId)
+        .execute(client);
+
+      const balanceTinybar = balance.hbars.toTinybars();
+      const thresholdTinybar = Hbar.fromString(
+        partner.threshold.toString(),
+        HbarUnit.Hbar
+      ).toTinybars();
+
+      let thresholdReset = false;
+
+      if (
+        partner.thresholdTriggered &&
+        balanceTinybar.greaterThanOrEqual(thresholdTinybar)
+      ) {
+        await prisma.apiPartner.update({
+          where: { id: partnerId },
+          data: { thresholdTriggered: false },
+        });
+
+        thresholdReset = true;
+      }
+
+      if (thresholdReset) {
+        const emails = await prisma.email.findMany({
+          where: {
+            partnerId: partnerId,
+            verified: true,
+          },
+          select: { email: true },
+        });
+
+        if (emails.length > 0) {
+          try {
+            await sendRefillSuccessEmail(
+              emails.map(e => e.email),
+              balance.hbars,
+              partner.threshold,
+            );
+          } catch (err) {
+            console.error("Refill email failed", err);
+          }
+        }
+      }
+
+      // 5️⃣ Optional: audit log
+      await logApiRequest(
+        partner_id,
+        null,
+        "refill-account",
+        200,
+        thresholdReset ? "THRESHOLD_RESET" : "NO_THRESHOLD_CHANGE",
+        0,
+        req.ip!,
+        true
+      );
+
+      return res.status(200).json({
+        code: "REFILL_PROCESSED",
+        thresholdReset,
+        currentBalance: balance.hbars.toString(),
+        refill_tx_id,
+      });
+    } catch (err) {
+      console.error(err);
+
+      return res.status(500).json({
+        code: "REFILL_INTERNAL_ERROR",
+      });
+    }
 
 });
-
+*/
 router.post("/pause", requirePartnerAuthentication, async (req, res) => {
   const { faucet_paused } = req.body as { faucet_paused: boolean };
   const { partnerId, role } = (req as any).user;
@@ -349,6 +535,7 @@ router.get("/pause", requirePartnerAuthentication, async (req, res) => {
 
 router.post("/confirm", requirePartnerAuthentication, async (req, res) => {
   console.log('REQ BODY:', req.body);
+  const { partnerId } = (req as any).user;
   const { transactionId } = req.body;
   if (!transactionId) {
     return res.status(400).json({ error: "Missing fields" });
@@ -365,6 +552,32 @@ router.post("/confirm", requirePartnerAuthentication, async (req, res) => {
         status: receipt.status?.toString(),
       });
     }
+
+    // Send an Email to Faucet Team
+    const email_list = await prisma.email.findMany({
+      where: {
+        partnerId: partnerId,
+        verified: true
+      },
+      select: {
+        email: true,
+      }
+    });
+    if (!email_list) {
+      return res.status(404).json({ code: 'EMAIL_LIST_NOT_FOUND' })
+    }
+    const emails = email_list.map(e => e.email);
+
+    const update_trigger = await prisma.apiPartner.update({
+      where: { id: partnerId },
+      data: { thresholdTriggered: false },
+      select: { accountId: true, threshold: true }
+    });
+    if (!update_trigger) {
+      return res.status(404).json({ code: 'TRIGGER_NOT_FOUND' })
+    }
+    const { hbar_balance } = await fetchPartnerBalanceInUsdAndHbarFromApi(update_trigger.accountId);
+    await sendRefillEmail(emails, hbar_balance, update_trigger.threshold);
 
     return res.json({
       status: "FINALIZED",
@@ -439,6 +652,34 @@ ORDER BY day ASC;
 }
 );
 
+router.get('/insights/requests/yearly', requirePartnerAuthentication, async (req, res) => {
+  const { partnerId } = (req as any).user;
+
+  const data = await prisma.$queryRaw<
+    {
+      month: string
+      success: number
+      failed: number
+      rate_limited: number
+    }[]
+  >`
+SELECT
+  to_char(timestamp AT TIME ZONE 'UTC', 'YYYY-MM') AS month,
+  COUNT(*) FILTER (WHERE "statusCode" BETWEEN 200 AND 299)::int AS success,
+  COUNT(*) FILTER (WHERE "statusCode" = 429)::int AS rate_limited,
+  COUNT(*) FILTER (
+    WHERE "statusCode" >= 400
+      AND "statusCode" != 429
+  )::int AS failed
+FROM "ApiRequestLog"
+WHERE "apiPartnerId" = ${partnerId}
+GROUP BY month
+ORDER BY month ASC;
+`;
+
+  res.json(data);
+});
+
 router.delete('/remove-user', requirePartnerAuthentication, async (req, res) => {
   const { role } = (req as any).user;
   if (!checkRole(role, [PartnerUserRole.OWNER])) {
@@ -448,8 +689,8 @@ router.delete('/remove-user', requirePartnerAuthentication, async (req, res) => 
   const removeUser = await prisma.apiPartnerUser.delete({
     where: { id: userId }
   });
-  if (!removeUser) return res.status(500).json({code: 'REMOVE_USER_FAILED'});
-  return res.status(200).json({success: true});
+  if (!removeUser) return res.status(500).json({ code: 'REMOVE_USER_FAILED' });
+  return res.status(200).json({ success: true });
 })
 
 router.post('/add-user-to-partner', requirePartnerAuthentication, async (req, res) => {
@@ -502,6 +743,54 @@ router.post('/add-user-to-partner', requirePartnerAuthentication, async (req, re
   }
 }
 );
+
+router.post("/update-user", requirePartnerAuthentication, async (req, res) => {
+  const { requested_role, requested_user_id } = req.body;
+  const { role: actorRole, user_id: actorUserId, partner_id } = (req as any).user;
+
+  // 1) Basic allowlist: only ADMIN/VIEWER assignable from partner portal
+  const assignableRoles = [PartnerUserRole.ADMIN, PartnerUserRole.VIEWER];
+  if (!assignableRoles.includes(requested_role)) {
+    return res.status(400).json({ code: "ROLE_NOT_ASSIGNABLE" });
+  }
+
+  // 2) Fetch target user (and make sure same org)
+  const target = await prisma.apiPartnerUser.findFirst({
+    where: { id: requested_user_id, partnerId: partner_id },
+    select: { id: true, role: true },
+  });
+
+  if (!target) return res.status(404).json({ code: "USER_NOT_FOUND" });
+
+  // 3) Prevent self-demotion (optional but recommended)
+  if (target.id === actorUserId) {
+    return res.status(400).json({ code: "CANNOT_CHANGE_SELF_ROLE" });
+  }
+
+  const isOwner = checkRole(actorRole, [PartnerUserRole.OWNER]);
+  const isAdmin = checkRole(actorRole, [PartnerUserRole.ADMIN]);
+
+  // 4) Authorization rules
+  const canEdit =
+    isOwner ||
+    (isAdmin &&
+      checkRole(target.role, [PartnerUserRole.ADMIN, PartnerUserRole.VIEWER]) &&
+      checkRole(requested_role, [PartnerUserRole.ADMIN, PartnerUserRole.VIEWER]));
+
+  if (!canEdit) return res.status(401).json({ code: "USER_DENIED" });
+  const update_user_role = await prisma.apiPartnerUser.update({
+    where: {
+      id: target.id
+    },
+    data: {
+      role: requested_role
+    }
+  });
+  if (!update_user_role) {
+    return res.status(500).json({ code: 'FAILED_TO_UPDATE' });
+  }
+  return res.status(200).json({ code: 'OK' });
+});
 
 router.post('/pause-user', requirePartnerAuthentication, async (req, res) => {
   const { role, partnerId } = (req as any).user;

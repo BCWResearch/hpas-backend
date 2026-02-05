@@ -1,26 +1,9 @@
 // middleware/adminAuth.ts
 import type { Request, Response, NextFunction } from "express";
 import { verifySessionToken } from "../utils/jwt";
+import { PrismaClient } from "@prisma/client";
 
-export async function requireAdminAuth(req: Request, res: Response, next: NextFunction) {
-  const h = req.header("authorization") ?? "";
-  const token = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
-  if (!token) return res.status(401).json({ error: "Missing token" });
-
-  try {
-    const payload = await verifySessionToken(token);
-    if (!payload.isAdmin || !payload.adminId) {
-      return res.status(403).json({ error: "Admin privileges required" });
-    }
-    (req as any).admin = {
-      adminId: payload.adminId,
-      role: payload.role,
-    };
-    next();
-  } catch {
-    res.status(401).json({ error: "Invalid or expired token" });
-  }
-}
+const prisma = new PrismaClient();
 
 export function requireRecentAdminStepUp(minutes = 1) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -46,16 +29,35 @@ export async function requireAdminAuthentication(
   try {
     const payload = await verifySessionToken(token);
 
+    const check2 = await prisma.apiAdminSession.findUnique({
+      where: {
+        jti: payload.jti,
+      }
+    });
+    if (!check2 || check2.revokedAt || check2.expiresAt < new Date()) {
+      res.clearCookie("session", {
+        httpOnly: true,
+        secure: true,
+        sameSite: "lax",
+        path: "/",
+      });
+      return res.status(401).json({ error: "Invalid or expired session" });
+    }
     if (!payload.isAdmin || !payload.adminId) {
       return res.status(403).json({ error: "Admin privileges required" });
     }
-
     (req as any).admin = {
       adminId: payload.adminId,
       role: payload.role,
     };
     next();
   } catch {
+    res.clearCookie("session", {
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      path: "/",
+    });
     return res.status(401).json({ error: "Invalid or expired session" });
   }
 }

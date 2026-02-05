@@ -181,6 +181,7 @@ model ApiRequestLog {
   apiPartnerId  String
   apiKeyId   String
   route      String
+  response   String?
   statusCode Int
   costUnits  Int      @default(1) // weight for throttling/billing if routes have different costs
   ipHash     String? // if you store an anonymized client fingerprint
@@ -220,6 +221,7 @@ model ApiPartner {
   encryptedPrivateKey Bytes
   thresholdTriggered  Boolean @default(false)
   active              Boolean @default(true)
+  isPausedByAdmin     Boolean @default(false)
   emails              Email[]
   users   ApiPartnerUser[]
   apiKeys ApiKey[]
@@ -239,7 +241,7 @@ model ApiPartnerUser {
   accountId String
   role      PartnerUserRole
   status    PartnerUserStatus
-
+  sessions ApiSession[]
   partner ApiPartner @relation(fields: [partnerId], references: [id])
 
   createdAt DateTime @default(now())
@@ -250,6 +252,20 @@ model ApiPartnerUser {
 model ApiPartnerAdmin {
   id    String @id @default(uuid())
   email String
+  sessions ApiAdminSession[]
+}
+
+model ApiAdminSession {
+  jti String @id
+  adminId String
+  admin ApiPartnerAdmin @relation(fields: [adminId], references: [id])
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+
+
+  @@index([adminId])
+  @@index([expiresAt])
 }
 
 model ApiUserLoginNonce {
@@ -306,6 +322,21 @@ model PartnerTransactionHistory {
   amountTinybar BigInt
   timestamp DateTime  @default(now())
 }
+
+model ApiSession {
+  jti        String   @id
+  userId     String
+  user       ApiPartnerUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  partnerId  String
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+
+  @@index([userId])
+  @@index([partnerId])
+  @@index([expiresAt])
+}
+
 
 enum PartnerUserRole {
   OWNER
