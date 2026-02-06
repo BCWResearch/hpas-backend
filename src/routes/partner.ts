@@ -287,7 +287,7 @@ router.get("/verify-email", async (req, res) => {
     where: { token },
     include: { email: true },
   });
-  console.log(record);
+  //console.log(record);
   if (!record || record.expiresAt < new Date()) {
     return res.status(400).send("Token expired or invalid");
   }
@@ -394,106 +394,8 @@ router.get('/dashboard', requirePartnerAuthentication, async (req, res) => {
   });
 });
 
-/*
-router.get('/refill-account/:transactionId', requirePartnerAuthentication, async (req, res) => {
-  // get the account id from BE transaction id 
-  const { partnerId } = (req as any).user;
-  const { transactionId } = req.params;
-      if (!partnerId) {
-      return res.status(400).json({ code: "MISSING_REQUIRED_FIELDS" });
-    }
-
-       try {
-      const partner = await prisma.apiPartner.findUnique({
-        where: { id: partnerId },
-        select: {
-          accountId: true,
-          threshold: true,
-          thresholdTriggered: true,
-        },
-      });
-
-      if (!partner) {
-        return res.status(404).json({ code: "PARTNER_NOT_FOUND" });
-      }
-
-      const client = Client.forMainnet();
-
-      const balance = await new AccountBalanceQuery()
-        .setAccountId(partner.accountId)
-        .execute(client);
-
-      const balanceTinybar = balance.hbars.toTinybars();
-      const thresholdTinybar = Hbar.fromString(
-        partner.threshold.toString(),
-        HbarUnit.Hbar
-      ).toTinybars();
-
-      let thresholdReset = false;
-
-      if (
-        partner.thresholdTriggered &&
-        balanceTinybar.greaterThanOrEqual(thresholdTinybar)
-      ) {
-        await prisma.apiPartner.update({
-          where: { id: partnerId },
-          data: { thresholdTriggered: false },
-        });
-
-        thresholdReset = true;
-      }
-
-      if (thresholdReset) {
-        const emails = await prisma.email.findMany({
-          where: {
-            partnerId: partnerId,
-            verified: true,
-          },
-          select: { email: true },
-        });
-
-        if (emails.length > 0) {
-          try {
-            await sendRefillSuccessEmail(
-              emails.map(e => e.email),
-              balance.hbars,
-              partner.threshold,
-            );
-          } catch (err) {
-            console.error("Refill email failed", err);
-          }
-        }
-      }
-
-      // 5️⃣ Optional: audit log
-      await logApiRequest(
-        partner_id,
-        null,
-        "refill-account",
-        200,
-        thresholdReset ? "THRESHOLD_RESET" : "NO_THRESHOLD_CHANGE",
-        0,
-        req.ip!,
-        true
-      );
-
-      return res.status(200).json({
-        code: "REFILL_PROCESSED",
-        thresholdReset,
-        currentBalance: balance.hbars.toString(),
-        refill_tx_id,
-      });
-    } catch (err) {
-      console.error(err);
-
-      return res.status(500).json({
-        code: "REFILL_INTERNAL_ERROR",
-      });
-    }
-
-});
-*/
 router.post("/pause", requirePartnerAuthentication, async (req, res) => {
+  //console.log('HIT');
   const { faucet_paused } = req.body as { faucet_paused: boolean };
   const { partnerId, role } = (req as any).user;
 
@@ -533,7 +435,7 @@ router.get("/pause", requirePartnerAuthentication, async (req, res) => {
 
 
 router.post("/confirm", requirePartnerAuthentication, async (req, res) => {
-  console.log('REQ BODY:', req.body);
+  //console.log('REQ BODY:', req.body);
   const { partnerId } = (req as any).user;
   const { transactionId } = req.body;
   if (!transactionId) {

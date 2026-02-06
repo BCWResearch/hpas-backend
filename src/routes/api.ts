@@ -186,9 +186,9 @@ router.post('/drip', requireApiKeyAuthentication, async (req, res) => {
 
         const thresholdTinybar = Hbar.fromString(threshold_info.threshold.toString(), HbarUnit.Hbar).toTinybars();
 
-        console.log('balanceTinybar:', postBalanceTinybar);
-        console.log('thresholdTinybar:', thresholdTinybar);
-        console.log('Triggered?:', threshold_info.thresholdTriggered);
+        //console.log('balanceTinybar:', postBalanceTinybar);
+        //console.log('thresholdTinybar:', thresholdTinybar);
+        //console.log('Triggered?:', threshold_info.thresholdTriggered);
 
         // update the api transaction history table:
         await prisma.partnerTransactionHistory.create({

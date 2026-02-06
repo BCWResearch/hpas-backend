@@ -17,7 +17,7 @@ export async function fetchPartnerBalanceInUsdAndHbarFromApi(accountId: string) 
     const data = await res.json();
     const hbar_balance = Hbar.fromTinybars(data.balance.balance).toString();
     */
-   console.log(accountBalance.hbars.toString());
+   //console.log(accountBalance.hbars.toString());
    const hbar_balance = accountBalance.hbars.toString();
     const usdPerHbar = await fetchUsdPerHbar();
 

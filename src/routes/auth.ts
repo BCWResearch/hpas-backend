@@ -115,9 +115,9 @@ router.post("/signin/verify", async (req, res) => {
     if (!isHedera(accountId)) return res.status(400).json({ error: "Invalid wallet format" });
 
     const verified = await verifyHederaSignature({ accountId, nonce, sigMapB64: signature });
-    console.log(verified);
+    //console.log(verified);
     if (verified) {
-        console.log("c1");
+        //console.log("c1");
         const compAccountId = await prisma.apiUserLoginNonce.findUnique({
             where: {
                 nonce,
@@ -222,9 +222,9 @@ router.post("/action/verify", async (req, res) => {
     if (!isHedera(accountId)) return res.status(400).json({ error: "Invalid wallet format" });
 
     const verified = await verifyHederaSignature({ accountId, nonce, sigMapB64: signature });
-    console.log(verified);
+    //console.log(verified);
     if (verified) {
-        console.log("c1");
+        //console.log("c1");
         const compAccountId = await prisma.apiUserActionNonce.findUnique({
             where: {
                 nonce,
@@ -315,7 +315,7 @@ router.post("/google", async (req, res) => {
     }
 
     const email = payload.email.toLowerCase();
-    console.log(payload);
+    // console.log(payload);
     // Lookup user
 
 
@@ -399,7 +399,7 @@ router.get("/partner", requirePartnerAuthentication, async (req, res) => {
 
 router.get("/admin", requireAdminAuthentication, async (req, res) => {
     const { adminId } = (req as any).admin;
-    console.log(req.body);
+    //console.log(req.body);
 
     const admin = await prisma.apiPartnerAdmin.findFirst({
         where: {
