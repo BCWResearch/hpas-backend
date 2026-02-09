@@ -33,6 +33,8 @@ spec:
         - run
         - deploy
         env:
+        - name: HEDERA_FEE_COLLECTION_ACCOUNT_ID
+          value: ''
         - name: KEY_ENV
           value: 'gcp'
         - name: JWT_SECRET

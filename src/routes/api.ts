@@ -12,7 +12,7 @@ import { logApiRequest } from "../utils/logger";
 const prisma = new PrismaClient();
 dotenv.config();
 const router = express.Router();
-const operatorId = process.env.HEDERA_TREASURY_ACCOUNT_ID;
+const operatorId = process.env.HEDERA_FEE_COLLECTION_ACCOUNT_ID;
 
 const kmsAdapter =
     process.env.KEY_ENV === "gcp"
