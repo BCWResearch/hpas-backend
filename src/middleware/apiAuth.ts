@@ -12,7 +12,6 @@ export async function requireApiKeyAuthentication(
     next: NextFunction
 ) {
     console.log("CALLED");
-    const h = req.header("authorization") ?? "";
     const apiKey = req.get("X-API-KEY");
 
     if (!apiKey) return res.status(404).json({ code: "API_KEY_NOT_FOUND" });

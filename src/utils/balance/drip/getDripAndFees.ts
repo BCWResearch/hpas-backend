@@ -2,11 +2,6 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-const ONE_HOUR = 60 * 60 * 1000;
-let cachedDrip: { drip: number; tinydrip: number } | null = null;
-let lastFetched: number | null = null;
-let lastGoodUsdPerHBAR: number | null = null;
-
 
 // TODO: THE PROBLEM IS HERE, THE DRIP + FEES != TOTAL SO ITS REJECTIGN THE TRANSACTION. DRIP + 
 export async function getDripAndFees(

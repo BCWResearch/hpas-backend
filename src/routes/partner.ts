@@ -1,5 +1,5 @@
 // src/routes/partner.ts
-import { Router, Request, Response, NextFunction } from "express";
+import { Router } from "express";
 import { PrismaClient, AccountType, PartnerUserRole, Prisma, PartnerUserStatus } from "@prisma/client";
 import crypto from "crypto";
 import { issueApiKey, revealApiKey } from "../utils/apiKey";
@@ -9,7 +9,7 @@ import { requireSecure } from "../middleware/secureGate";
 import { fetchPartnerBalanceInUsdAndHbarFromApi } from "../utils/balance/balanceUtil";
 import { checkRole } from "../utils/checkRole";
 import { getHederaClient } from "../utils/getHederaClient";
-import { AccountBalanceQuery, AccountUpdateTransaction, Client, Hbar, HbarUnit, PrivateKey, TransactionId, TransactionReceiptQuery } from "@hashgraph/sdk";
+import { AccountUpdateTransaction, Client, Hbar, HbarUnit, PrivateKey, TransactionId, TransactionReceiptQuery } from "@hashgraph/sdk";
 import { sendEmail } from "../utils/email/email";
 import { getPartnerKeyFromKMS } from "./api";
 import { fetchUsdPerHbar } from "../utils/balance/drip/getDripAndFees";
@@ -34,6 +34,8 @@ declare global {
 }
 
 /** Require recent step-up (fresh signature) within N minutes before sensitive ops */
+
+/*
 const requireRecentStepUp = (minutes = 5) => (req: Request, res: Response, next: NextFunction) => {
   const stepUp =
     (req as any).auth?.stepUpAt ??
@@ -45,16 +47,20 @@ const requireRecentStepUp = (minutes = 5) => (req: Request, res: Response, next:
   next();
 };
 
+*/
 
 // --- helpers (reuse if you already have them elsewhere) ---
+/*
 const isEvm = (s: string) => /^0x[0-9a-fA-F]{40}$/.test((s ?? "").trim());
 const isHedera = (s: string) => /^\d+\.\d+\.\d+$/.test((s ?? "").trim());
+
 const normalizeAccountId = (raw?: string) => {
   const t = (raw ?? "").trim();
   if (isEvm(t)) return { evm: t.toLowerCase(), hedera: null as string | null, type: 'EVM' as AccountType };
   if (isHedera(t)) return { evm: null as string | null, hedera: t };
   return { evm: null as string | null, hedera: null as string | null, type: 'HEDERA' as AccountType };
 };
+*/ 
 
 function getRangeStart(range: string) {
   switch (range) {
@@ -131,7 +137,7 @@ router.post("/rotate-account", requirePartnerAuthentication, async (req, res) =>
   let encryptedPrivateKey: Buffer;
   try {
     encryptedPrivateKey = await kmsAdapter.wrap(Buffer.from(newPrivateKey.toBytes()));
-  } catch (e) {
+  } catch {
     return res.status(500).json({ code: "KMS_WRAP_FAILED" });
   }
 
@@ -157,7 +163,7 @@ router.post("/rotate-account", requirePartnerAuthentication, async (req, res) =>
   const updatedPartner = await prisma.apiPartner.update({
     where: { id: partnerId },
     data: {
-      encryptedPrivateKey,
+      encryptedPrivateKey: new Uint8Array(encryptedPrivateKey),
       publicKey: newPublicKey.toStringDer(),
       // don't reset unrelated fields unless you intend to
     },
@@ -264,8 +270,7 @@ router.post("/add-email", requirePartnerAuthentication, async (req, res) => {
 });
 router.delete("/remove-email/:id", requirePartnerAuthentication, async (req, res) => {
   const { role } = (req as any).user;
-  const { id } = req.params;
-
+  const id = req.params.id as string;
   if (!checkRole(role, [PartnerUserRole.ADMIN, PartnerUserRole.OWNER])) {
     return res.status(401).json({ code: "UNAUTHORIZED" });
   }
@@ -598,7 +603,7 @@ router.post('/add-user-to-partner', requirePartnerAuthentication, async (req, re
   const { accountId, role } = req.body;
 
 
-  const { userId: reqUserId, partnerId: reqPartnerId, role: reqUserRole } = (req as any).user;
+  const { partnerId: reqPartnerId, role: reqUserRole } = (req as any).user;
   if (!checkRole(reqUserRole, [PartnerUserRole.OWNER, PartnerUserRole.ADMIN])) {
     return res.status(401).json({ code: 'USER_DENIED' });
   }
@@ -609,6 +614,9 @@ router.post('/add-user-to-partner', requirePartnerAuthentication, async (req, re
       accountId,
     }
   });
+  if (!partner) {
+    return res.status(404).json({ code: 'PARTNER_DNE' })
+  }
   if (checkAvailability) {
     return res.status(401).json({ code: 'USER_ALREADY_EXISTS' });
   } else {
@@ -623,23 +631,6 @@ router.post('/add-user-to-partner', requirePartnerAuthentication, async (req, re
     if (!user) {
       return res.status(500).json({ code: 'Error adding user to org' });
     }
-    // send email to invite user to org (TODO)
-    /*
-            const subject = `Welcome to ${partner!.name}'s Faucet Team!`;
-            const html = `
-        <div style="font-family: system-ui,-apple-system,Segoe UI,Roboto,sans-serif;">
-          <h2>Hello ${email}</h2>
-          <p>
-          You have been invited to ${partner!.name}'s Faucet API Team. You can use the following link to sign in:
-        
-          </p>
-    
-          <h3>EVM Accounts That Received Drips within the past 24 hours:</h3>
-        </div>
-      `;
-    
-            await sendEmail(email, subject, html);
-            */
     return res.status(200).json({ ok: true });
   }
 }
@@ -694,7 +685,7 @@ router.post("/update-user", requirePartnerAuthentication, async (req, res) => {
 });
 
 router.post('/pause-user', requirePartnerAuthentication, async (req, res) => {
-  const { role, partnerId } = (req as any).user;
+  const { role } = (req as any).user;
   const { userId } = req.body;
   if (!checkRole(role, [PartnerUserRole.ADMIN, PartnerUserRole.OWNER])) {
     return res.status(401).json({ code: "CANNOT_FETCH_USERS" });
@@ -711,7 +702,7 @@ router.post('/pause-user', requirePartnerAuthentication, async (req, res) => {
 });
 
 router.post('/resume-user', requirePartnerAuthentication, async (req, res) => {
-  const { role, partnerId } = (req as any).user;
+  const { role } = (req as any).user;
   const { userId } = req.body;
   if (!checkRole(role, [PartnerUserRole.ADMIN, PartnerUserRole.OWNER])) {
     return res.status(401).json({ code: "CANNOT_FETCH_USERS" });
@@ -778,7 +769,8 @@ router.get("/keys/:id/reveal",
   requireSecure(),
   async (req, res) => {
     const { partnerId } = (req as any).auth;
-    const key = await prisma.apiKey.findUnique({ where: { id: req.params.id } });
+    const id = req.params.id as string;
+    const key = await prisma.apiKey.findUnique({ where: { id } });
     if (!key || key.apiPartnerId !== partnerId) return res.status(404).json({ error: "Not found" });
     if (key.revoked) return res.status(400).json({ error: "Key revoked" });
 
@@ -794,8 +786,9 @@ router.get("/keys/:id/regenerate",
   requireSecure(),
   async (req, res) => {
     const { partnerId, role } = (req as any).user;
+    const id = req.params.id as string;
     if (!checkRole(role, [PartnerUserRole.ADMIN, PartnerUserRole.OWNER])) { return res.status(401).json({ code: 'UNAUTHORIZED' }) }
-    const cur = await prisma.apiKey.findUnique({ where: { id: req.params.id }, include: { scopes: true } });
+    const cur = await prisma.apiKey.findUnique({ where: { id }, include: { scopes: true } });
     if (!cur || cur.apiPartnerId !== partnerId) return res.status(404).json({ error: "Not found" });
 
     await prisma.apiKey.update({ where: { id: cur.id }, data: { revoked: true } });

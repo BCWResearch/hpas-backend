@@ -1,4 +1,4 @@
-import { AccountBalanceQuery, Hbar, HbarUnit } from "@hashgraph/sdk";
+import { AccountBalanceQuery, Hbar } from "@hashgraph/sdk";
 import { fetchUsdPerHbar } from "./drip/getDripAndFees";
 import { getHederaClient } from "../getHederaClient";
 

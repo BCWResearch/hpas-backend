@@ -6,13 +6,13 @@ WORKDIR /usr/src/app
 COPY . .
 
 # Install dependencies
-RUN npm install
+RUN pnpm install
 
 # Generate Prisma client
-RUN npx prisma generate
+RUN pnpm exec prisma generate
 
 # Expose API port
 EXPOSE 3003
 
 # Start the dev server
-CMD ["npm", "run", "deploy"]
+CMD ["pnpm", "run", "deploy"]

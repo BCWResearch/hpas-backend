@@ -1,7 +1,7 @@
 // src/middleware/secureGate.ts
 import type { Request, Response, NextFunction } from "express";
-import { getBearer, verifySecureToken, sha256 } from "../utils/jwt";
-import { assertSecureJtiValid, consumeSecureJti } from "../utils/secureJti";
+import { verifySecureToken, sha256 } from "../utils/jwt";
+import { assertSecureJtiValid } from "../utils/secureJti";
 
 export function requireSecure() {
   return async (req: Request, res: Response, next: NextFunction) => {

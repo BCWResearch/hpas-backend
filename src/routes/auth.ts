@@ -109,7 +109,6 @@ router.post("/signin/nonce", async (req, res) => {
 
 router.post("/signin/verify", async (req, res) => {
     const { accountId, signature, nonce } = req.body ?? {};
-    let isFirstLogin = false;
     let showGetStartedModal = false;
     if (!accountId || !signature || !nonce) {
         return res.status(400).json({ error: "Missing fields" });
@@ -142,10 +141,9 @@ router.post("/signin/verify", async (req, res) => {
         });
         if (!user) { return res.status(404).json({ code: 'USER_NOT_FOUND' }) }
         if (user.status === PartnerUserStatus.INVITED) {
-            isFirstLogin = true;
             const users = await prisma.apiPartnerUser.findMany({
                 where: {
-                    id: user.partnerId,
+                    partnerId: user.partnerId,
                 }
             });
             if (users.length === 1) { showGetStartedModal = true; }

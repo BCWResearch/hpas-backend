@@ -172,7 +172,7 @@ export async function issueApiKey(
       secretCiphertext: ct,
       secretIv: iv,
       secretTag: tag,
-      wrappedDek,
+      wrappedDek: new Uint8Array(wrappedDek),
       revoked: false
     },
     select: { id: true, env: true, type: true, expiresAt: true, prefix: true },

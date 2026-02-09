@@ -5,7 +5,6 @@ import { makeGcpKmsAdapter, makeLocalKmsAdapter } from "../utils/kms/local";
 import { getHederaClient } from "../utils/getHederaClient";
 import { requireAdminAuthentication } from "../middleware/adminAuth";
 import { AccountCreateTransaction, Hbar, PrivateKey } from "@hashgraph/sdk";
-import { requirePartnerAuthentication } from "../middleware/partnerAuth";
 import { generateVerificationToken, sendVerificationEmail } from "./partner";
 import { sendEmail } from "../utils/email/email";
 
@@ -34,7 +33,7 @@ const isHedera = (s: string) => /^\d+\.\d+\.\d+$/.test((s ?? "").trim());
  */
 
 router.get('/emails/:id', requireAdminAuthentication, async (req, res) => {
-    const { id: partnerId } = req.params;
+    const partnerId = req.params.id as string;
     if (!partnerId) { return res.status(400).json({ code: "MISSING_PARTNER_ID" }); }
 
     const partner = await prisma.apiPartner.findUnique({
@@ -52,7 +51,7 @@ router.get('/emails/:id', requireAdminAuthentication, async (req, res) => {
 });
 
 router.delete("/remove-email/:id", requireAdminAuthentication, async (req, res) => {
-    const { id } = req.params;
+    const id = req.params.id as string;
     try {
 
         await prisma.email.delete({
@@ -60,13 +59,13 @@ router.delete("/remove-email/:id", requireAdminAuthentication, async (req, res) 
         });
 
         return res.status(200).json({ success: true });
-    } catch (e) {
+    } catch {
         return res.status(500).json({ code: 'REMOVE_EMAIL_ERROR' });
     }
 });
 
 router.post('/add-email/:id', requireAdminAuthentication, async (req, res) => {
-    const { id: partnerId } = req.params;
+    const partnerId = req.params.id as string;
     if (!partnerId) { return res.status(400).json({ code: "MISSING_PARTNER_ID" }); }
 
     const { emails } = req.body;
@@ -124,7 +123,7 @@ router.post('/resume-user', requireAdminAuthentication, async (req, res) => {
 });
 
 router.get('/users/:id', requireAdminAuthentication, async (req, res) => {
-    const { id: partnerId } = req.params;
+    const partnerId = req.params.id as string;
     if (!partnerId) { return res.status(400).json({ code: "MISSING_PARTNER_ID" }); }
     const partner = await prisma.apiPartner.findUnique({
         where: { id: partnerId },
@@ -136,7 +135,7 @@ router.get('/users/:id', requireAdminAuthentication, async (req, res) => {
     });
 });
 router.get('/request-logs/:id', requireAdminAuthentication, async (req, res) => {
-    const { id } = req.params;
+    const id = req.params.id as string;
     if (!id) { return res.status(400).json({ code: "MISSING_PARTNER_ID" }); }
     try {
         const logs = await prisma.apiRequestLog.findMany({
@@ -156,13 +155,13 @@ router.get('/request-logs/:id', requireAdminAuthentication, async (req, res) => 
         });
 
         return res.status(200).json({ logs });
-    } catch (e) {
+    } catch {
         return res.status(500).json({ code: 'INTERNAL_ERROR' });
     }
 });
 
 router.delete("/remove-user/:id", requireAdminAuthentication, async (req, res) => {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const removeUser = await prisma.apiPartnerUser.delete({
         where: { id }
     });
@@ -220,7 +219,7 @@ router.post("/add-new-partner", requireAdminAuthentication, async (req, res) => 
                 threshold: 0,
                 dripAmountInUsd: 0,
                 thresholdTriggered: false,
-                encryptedPrivateKey,
+                encryptedPrivateKey: new Uint8Array(encryptedPrivateKey),
                 publicKey: newPublicKey.toStringDer(),
                 accountId: receipt.accountId!.toString(),
             },
@@ -240,7 +239,7 @@ router.post("/add-new-partner", requireAdminAuthentication, async (req, res) => 
                 data: {
                     email: point_of_contact_email,
                     partnerId: partner.id,
-                    verified: false,
+                    verified: true,
                 },
             });
 
@@ -354,7 +353,7 @@ router.post("/add-new-partner", requireAdminAuthentication, async (req, res) => 
 
 // U
 router.post("/partners/:id", requireAdminAuthentication, async (req, res) => {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const { name, threshold, dripAmountInUsd, active } = req.body;
 
     const updated_partner = await prisma.apiPartner.update({
@@ -372,14 +371,16 @@ router.post("/partners/:id", requireAdminAuthentication, async (req, res) => {
 });
 
 // a method to rotate account keys automatically
+/*
 router.post('/rotate/:id', requireAdminAuthentication, async (req, res) => {
 
 });
+*/
 
 // D
 
 router.get('/pause/:id', requireAdminAuthentication, async (req, res) => {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const partner = await prisma.apiPartner.findFirst({
         where: { id },
         select: { isPausedByAdmin: true }
@@ -391,13 +392,12 @@ router.get('/pause/:id', requireAdminAuthentication, async (req, res) => {
         where: { id },
         data: { isPausedByAdmin: !partner.isPausedByAdmin }
     });
-
+    if (!changed_partner) { return res.status(500).json({ code: 'PAUSE_ORG_FAILED' }) }
     return res.status(200).json({ success: true });
 });
 
 router.delete('/partner/:id', requireAdminAuthentication, async (req, res) => {
-    const { id } = req.params;
-
+    const id = req.params.id as string;
     const partner = await prisma.apiPartner.delete({
         where: { id },
     });
