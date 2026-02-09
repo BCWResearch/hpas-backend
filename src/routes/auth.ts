@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { googleClient } from "../utils/google";
 import { signSecureToken, signSessionToken, verifySessionToken } from "../utils/jwt";
-import { PartnerUserStatus, PrismaClient } from "@prisma/client";
+import { PartnerUserRole, PartnerUserStatus, PrismaClient } from "@prisma/client";
 import { requireAdminAuthentication } from "../middleware/adminAuth";
 import { requirePartnerAuthentication } from "../middleware/partnerAuth";
 import crypto from "crypto";
@@ -146,7 +146,7 @@ router.post("/signin/verify", async (req, res) => {
                     partnerId: user.partnerId,
                 }
             });
-            if (users.length === 1) { showGetStartedModal = true; }
+            if (users.length === 1 && users[0].role != PartnerUserRole.VIEWER) { showGetStartedModal = true; }
             await prisma.apiPartnerUser.update({ where: { id: user.id }, data: { status: PartnerUserStatus.ACTIVE } });
         }
         const jti = crypto.randomUUID();
